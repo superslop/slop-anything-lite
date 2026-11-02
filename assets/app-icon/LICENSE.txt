@@ -1,10 +1,15 @@
-Craft Anything app icon (craft-anything.svg and every file derived from it in this
-directory: craft-anything-1024.png, craft-anything.icns, craft-anything.ico and
-hicolor/).
+Slop Anything LITE app icon (craft-anything.svg and every file derived from it
+in this directory: craft-anything-1024.png, craft-anything.icns,
+craft-anything.ico and hicolor/).
 
-This is the raven, the Crafting Apps' shared icon, made by the ArtCraft team. It is NOT covered
-by Craft Anything's MIT OR Apache-2.0 license. It is used on the same terms as the ArtCraft
-brand assets in docs/brand/LICENSE-brand.txt, which also say what forks and modified versions
-must do: replace it with their own icon.
+This is the sparkles icon, drawn for this fork. It is covered by this
+repository's MIT licence (see LICENSE-MIT at the repository root), Copyright
+(c) 2026 John Dhoe.
 
-trace.py is a tool, covered by the repository's MIT OR Apache-2.0 license.
+It replaces the upstream Craft Anything icon (the raven, made by the ArtCraft
+team), which was not open source and whose terms required forks and modified
+versions to replace it with their own icon. The raven files are removed from
+this fork; the removal is recorded in docs/slop/PROVENANCE.md.
+
+trace.py is an upstream tool, covered by the upstream licence terms in
+docs/slop/PROVENANCE.md.

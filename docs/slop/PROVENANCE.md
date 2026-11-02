@@ -44,7 +44,8 @@ A modified version that is distributed must remove those marks and must not be
 called ArtCraft or be presented as an ArtCraft product. This fork therefore:
 
 - uses its own name, Slop Anything LITE;
-- removes `docs/brand/` in a dedicated rebrand commit;
+- removes the mark files in `docs/brand/` in a dedicated rebrand commit (the
+  brand licence text itself is kept, as the record of the terms);
 - replaces the app icon with its own original icon in a dedicated commit;
 - keeps only plain-text references to Craft Anything and the ArtCraft team in
   attribution contexts such as this file, `NOTICE`, and `ATTRIBUTION.md`.

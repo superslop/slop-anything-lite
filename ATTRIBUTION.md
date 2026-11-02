@@ -34,15 +34,19 @@ texts are in the crate's `fonts/` folder.
 |---|---|---|---|---|
 | `*.svg` | Lucide | © Lucide Icons and Contributors | https://lucide.dev | ISC, `LICENSE-lucide.txt` |
 
-## App icon (`assets/app-icon/`)
+## App icon (`assets/app-icon/`) — fork replacement
 
-The raven, the Crafting Apps' shared icon, made by the ArtCraft team; not open source, used on the
-brand terms below. See `assets/app-icon/LICENSE.txt`.
+Upstream's raven icon (made by the ArtCraft team, not open source) has been
+removed from this fork, as its terms required. The sparkles icon now in this
+directory is this fork's own work, covered by the MIT licence; see
+`assets/app-icon/LICENSE.txt` and `docs/slop/PROVENANCE.md`.
 
-## Brand (`docs/brand/`)
+## Brand (`docs/brand/`) — fork note
 
-The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team and are not covered by
-the open-source licence; see `docs/brand/LICENSE-brand.txt`.
+The ArtCraft name, wordmark and logos were trademarks of the ArtCraft Team
+and were not covered by the open-source licence. The mark files have been
+removed from this fork; the brand licence text is retained for reference at
+`docs/brand/LICENSE-brand.txt`.
 
 ## Optional build-time fonts
 
