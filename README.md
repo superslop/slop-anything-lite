@@ -50,8 +50,8 @@ started notes.
 ```sh
 git clone https://github.com/superslop/slop-anything-lite
 cd slop-anything-lite
-cargo run --release -p craft-anything        # desktop app (internal name kept from upstream)
-cargo install --path apps/craft-anything-cli # CLI, as craft-anything-cli (internal name kept)
+cargo run --release -p craft-anything        # desktop app (binary name: slop-anything)
+cargo install --path apps/craft-anything-cli # CLI, installed as slop-anything-cli
 ```
 
 Building a project (as opposed to studying one) needs a builder: an agent

@@ -24,7 +24,7 @@ fn website_clone_reaches_ready_and_looks_alike() {
         return;
     }
     let projects = tempfile::tempdir().unwrap();
-    let out = Process::new(env!("CARGO_BIN_EXE_craft-anything-cli"))
+    let out = Process::new(env!("CARGO_BIN_EXE_slop-anything-cli"))
         .args(["rebuild", "https://example.com", "Clone this website", "--rounds", "1", "--unattended", "--format", "text"])
         .arg("--projects-dir")
         .arg(projects.path())

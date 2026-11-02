@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 fn cli(args: &[&str], config: &std::path::Path) -> Output {
-    Process::new(env!("CARGO_BIN_EXE_craft-anything-cli")).args(args).env("CRAFT_ANYTHING_CONFIG_DIR", config).timeout(Duration::from_secs(60)).run().unwrap()
+    Process::new(env!("CARGO_BIN_EXE_slop-anything-cli")).args(args).env("CRAFT_ANYTHING_CONFIG_DIR", config).timeout(Duration::from_secs(60)).run().unwrap()
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn mcp_over_stdio() {
     .iter()
     .map(|v| format!("{v}\n"))
     .collect::<String>();
-    let out = Process::new(env!("CARGO_BIN_EXE_craft-anything-cli"))
+    let out = Process::new(env!("CARGO_BIN_EXE_slop-anything-cli"))
         .arg("mcp")
         .env("CRAFT_ANYTHING_CONFIG_DIR", cfg.path())
         .stdin_bytes(input)
@@ -135,7 +135,7 @@ fn raw_binary_open_params_tool_format_and_project_evidence_across_processes() {
 }
 
 fn cli_with_stdin(args: &[&str], config: &std::path::Path, input: &[u8]) -> Output {
-    Process::new(env!("CARGO_BIN_EXE_craft-anything-cli"))
+    Process::new(env!("CARGO_BIN_EXE_slop-anything-cli"))
         .args(args)
         .env("CRAFT_ANYTHING_CONFIG_DIR", config)
         .stdin_bytes(input.to_vec())

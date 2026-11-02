@@ -6,14 +6,14 @@ use serde_json::Value;
 use std::time::Duration;
 
 fn cli(args: &[&str], config: &std::path::Path) -> Output {
-    Process::new(env!("CARGO_BIN_EXE_craft-anything-cli")).args(args).env("CRAFT_ANYTHING_CONFIG_DIR", config).timeout(Duration::from_secs(120)).run().unwrap()
+    Process::new(env!("CARGO_BIN_EXE_slop-anything-cli")).args(args).env("CRAFT_ANYTHING_CONFIG_DIR", config).timeout(Duration::from_secs(120)).run().unwrap()
 }
 
 #[test]
 fn an_mcp_server_becomes_a_toolset_of_proxied_tools() {
     let cfg = tempfile::tempdir().unwrap();
     let projects = tempfile::tempdir().unwrap();
-    let exe = env!("CARGO_BIN_EXE_craft-anything-cli");
+    let exe = env!("CARGO_BIN_EXE_slop-anything-cli");
     std::fs::write(
         cfg.path().join("config.toml"),
         format!("version = 1\n\n[[plugins.mcp]]\nid = \"selfmcp\"\nname = \"Itself\"\ncommand = '{exe}'\nargs = [\"mcp\", \"--all-tools\"]\nconsent = false\n"),

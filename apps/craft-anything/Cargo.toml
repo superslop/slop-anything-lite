@@ -1,11 +1,15 @@
 [package]
 name = "craft-anything"
-description = "Craft Anything: find out how any software works, then craft your own"
+description = "Slop Anything LITE: find out how any software works, then craft your own"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 build = "build.rs"
+
+[[bin]]
+name = "slop-anything"
+path = "src/main.rs"
 
 [lints]
 workspace = true
