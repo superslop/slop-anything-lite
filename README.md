@@ -15,9 +15,14 @@ Slop Anything LITE is a fork of Craft Anything, keeping its core workflow —
 Clean room as the default — with two changes:
 
 1. **Wider AI builder and provider support.** Upstream ships one verified
-   builder route. This fork verifies and hardens the others: more agent CLIs,
-   agent-protocol builders, and direct API backends. See
-   `docs/slop/SPEC.md` and the catalogue in `config/slop/providers.toml`.
+   builder route. This fork wires the others: agent CLIs (Claude Code,
+   Codex — now with thread resume — Gemini CLI, Qwen Code, opencode and
+   goose over ACP, plus a config-driven generic adapter for any other
+   agent program), and direct API backends (Anthropic, OpenAI, OpenRouter,
+   and any OpenAI-compatible or local server). The catalogue is data:
+   `config/slop/providers.toml`, shown by `slop-anything-cli ai catalogue`.
+   These routes are implemented and unit-tested but not live-verified —
+   see `docs/slop/SPEC.md`.
 2. **Superslop output by default.** Projects generated in the default Slop
    mode are restyled with the `superslop` skill suite: the indigo-to-purple-
    to-pink gradient, glass, bento layout, and its accessibility gates. A
@@ -40,6 +45,17 @@ and the MCP server; the Study → Build → Check → Refine workflow for websit
 with the verified upstream builder; website checks at three screen widths;
 Clean room and Deep modes. Upstream's own status document is
 `docs/STATUS.md`.
+
+The fork's own work on top: binaries named `slop-anything`,
+`slop-anything-cli` and `slop-anything-web`; the LITE tool profile on the
+CLI and MCP surfaces (firmware, packet, database, radio, game-archive,
+stand-in and hosted-asset families hidden unless `--full` or
+`SLOP_ANYTHING_FULL=1`); the wider builder/provider wiring above; and Slop
+mode for website builds — superslop styling in the builder's brief, judged
+by the Slop Gate (palette use + WCAG contrast + the functional checks)
+instead of likeness, with `--faithful` restoring upstream behaviour.
+Packaging scripts under `packaging/` still reference the old binary file
+names and have not been through a rename pass yet.
 
 ## Build from source
 

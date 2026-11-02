@@ -32,6 +32,13 @@ directions, so the fork has two modes:
   the round limit, and superslop styling is applied only to generated
   documentation (README files), never to the target's user interface.
 
+> Implementation status: landed. `RunOptions.faithful` threads the mode
+> through a run; the CLI rebuild takes `--faithful`. In Slop mode a website
+> build's brief carries the superslop stack and the Slop Gate (below)
+> replaces the likeness check; in Faithful mode the brief and the check list
+> are upstream's exactly (no superslop at all — the documentation-only
+> styling split was not cleanly separable, so Faithful applies none).
+
 ## LITE scope
 
 Kept:
@@ -55,6 +62,18 @@ Cut or feature-gated off in the LITE build:
 - WASM plugins.
 - Generated image and 3D assets through hosted asset providers.
 - HAR stand-in backends.
+
+> Implementation status: landed as gates, not deletions, in
+> `crates/engine/src/lite.rs`. The CLI and the MCP server it hosts build
+> their registry through the LITE profile by default (`Engine::
+> shared_with_profile`); `--full` or `SLOP_ANYTHING_FULL=1` restores every
+> family. Gated by tool id/toolset: firmware, packets (including the tshark
+> check), databases, radio, game archives, `web_standin_*`, and the hosted
+> asset generators. The CLI rebuild additionally drops the game kind in
+> LITE. Two scope notes: the Advanced workbench is a desktop UI mode, not
+> tool-driven, so it is not gated (the desktop keeps the full registry);
+> WASM plugin checks still run, as they are the fork-registered extension
+> seam rather than a tool family.
 
 Machine names (`craft-anything-*` crates and binaries, the bundle id) are
 unchanged in the scaffold phase.
@@ -97,6 +116,13 @@ credentials, and offers no sign-in of its own.
 | Codex | Works through its own flags; unverified on a real install; no resume | Live-verify; add resume |
 | Gemini CLI, Qwen Code, opencode, goose (ACP) | Protocol unit tests against scripted messages; never run against a real agent | Live-verify one by one |
 
+> Implementation status: all listed builders are selectable through backend
+> configuration (kind `agent_cli`, the agent id as the model), and the agent
+> dropdown now also offers qwen-code and goose, which it previously missed.
+> Codex thread resume is implemented (`codex exec resume <thread-id>`; the
+> adapter reports `resumes()`). Status for the fork: implemented, not
+> live-verified (see the verification policy above).
+
 ### Tier 2 — API loop builders
 
 This tool's own file-writing tool loop (in `crates/ai`) drives a model API
@@ -116,11 +142,24 @@ Provider and model catalogues are data, not code: see
 `config/slop/providers.toml`. Keys come from the environment or the operating
 system's secret store, never from files in a project or in this repository.
 
+> Implementation status: every backend above maps to a `BackendKind`
+> (Anthropic, OpenAI, OpenRouter, OpenAI-compatible) built by the existing
+> API loop, selectable through the same backend configuration. The
+> catalogue file itself is loaded by `crates/ai/src/catalogue.rs`
+> (`SLOP_ANYTHING_PROVIDERS_TOML` override, working-directory/executable
+> lookup, embedded copy as fallback) and shown by `ai catalogue`.
+> Implemented, not live-verified.
+
 ### Tier 3 — generic CLI adapter
 
 Any other agent binary, driven with plain text in and out. Labelled in the
 interface as the lowest-assurance tier: no structured approvals beyond the
 project-folder rules, no session resume.
+
+> Implementation status: landed as a registered adapter under the stable id
+> `generic-cli` (config-driven: the backend's `command` and `args`; prompt
+> in as the last argument, output back as text; no MCP registration).
+> Implemented, not live-verified; unit-tested against a scripted fake binary.
 
 ## The superslop output style
 
@@ -153,6 +192,19 @@ the suite's own audit approach:
 The Slop Gate is a check in the rebuild workflow's check registry, beside the
 existing checks, so Faithful mode simply does not select it.
 
+> Implementation status: landed in `crates/ai/src/rebuild/slop.rs`. The
+> builder instruction stack embeds the vendored suite's UI, copywriting,
+> layout/mobile and human modules into website briefs in Slop mode. The
+> gate composes with the functional checks (for a website target it runs
+> the visual check first and drops its similarity; for a request-only
+> build it runs after the build check) and then verifies (1) the gradient
+> palette from the design tokens is actually used in the generated styles
+> (at least two stops present) and (2) every declared gate pair meets the
+> tokens file's minimum contrast ratio. Deviation from the original gate
+> sketch: the slop-density grade (item 1 in the first sketch) is not
+> computed — the tokens file's `min_grade` remains data; palette usage is
+> the enforced style signal.
+
 ## Compliance rules carried from upstream
 
 - Never bypass DRM, sign-in, or anti-cheat. Clean room remains the default.
@@ -173,14 +225,14 @@ existing checks, so Faithful mode simply does not select it.
    icon for this fork. (commit: chore)
 7. Point workspace repository metadata at this fork. (commit: chore)
 8. Push, and verify the upstream CI gate passes on the unmodified core.
-9. LITE trim behind feature gates.
+9. LITE trim behind feature gates. (landed)
 10. Tier 1 implementation: all agent CLI builders selectable and wired
-    (Codex incl. resume where the agent supports it; ACP builders).
+    (Codex incl. resume where the agent supports it; ACP builders). (landed)
 11. Tier 2 implementation: the API loop wired to every backend in
     `config/slop/providers.toml` (OpenRouter, Anthropic, OpenAI,
-    OpenAI-compatible/local), plus the Tier 3 generic CLI adapter.
-12. Slop Gate check and the builder instruction stack.
+    OpenAI-compatible/local), plus the Tier 3 generic CLI adapter. (landed)
+12. Slop Gate check and the builder instruction stack. (landed)
 13. Binary and display rename only: the apps' binary names and UI display
-    strings. Internal crate names stay `craft-anything-*` (decision above).
+    strings. Internal crate names stay `craft-anything-*` (decision above). (landed)
 14. Periodic upstream sync: merge `storytold/craft-anything` main, keeping
     the fork's commits (provenance, spec, config, rebrand) easy to re-apply.
