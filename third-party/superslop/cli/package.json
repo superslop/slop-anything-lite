@@ -1,0 +1,26 @@
+{
+  "name": "superslop-ai",
+  "version": "1.0.0",
+  "description": "Interactive installer and Slop-O-Meter auditor for the superslop skills. Super Slop: Maximalist AI Cliché Rules for AI Coding Agents.",
+  "type": "module",
+  "bin": {
+    "superslop-ai": "index.mjs"
+  },
+  "license": "MIT",
+  "author": "superslop",
+  "keywords": [
+    "superslop",
+    "ai-slop",
+    "design-rules",
+    "copy-rules",
+    "agent-skills",
+    "ui",
+    "parody"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.mjs"
+  ]
+}

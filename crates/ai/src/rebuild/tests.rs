@@ -294,6 +294,7 @@ fn notes_added_while_it_works_reach_the_agent_at_its_next_step() {
         decompiled: false,
         usage: None,
         self_check: None,
+        faithful: false,
     };
     assert!(w.added(&mut ws).is_none(), "nothing added, nothing to say");
     let note = |id, text: &str| Note { id, text: format!("{text} (pictures: a.png)"), shown: text.into() };
@@ -597,6 +598,7 @@ fn an_api_backend_builds_with_the_build_tools() {
         decompiled: false,
         usage: None,
         self_check: None,
+        faithful: false,
     };
     w.attach(&ws).unwrap();
     // The model writes a file with the Build tools, then answers.
@@ -713,6 +715,7 @@ fn the_mechanics_sheet_is_required_and_held_against_the_code() {
         decompiled: false,
         usage: None,
         self_check: None,
+        faithful: false,
     };
     let check = |round| w.run_checks(&ws, &SheetKind, round).unwrap().remove(0);
 
@@ -985,6 +988,7 @@ fn check_worker(ws: &Workspace, deep: bool) -> Worker {
         decompiled: false,
         usage: None,
         self_check: None,
+        faithful: false,
     }
 }
 
@@ -1371,6 +1375,7 @@ fn preparing_the_builders_agent_does_not_lock_up() {
         decompiled: false,
         usage: None,
         self_check: None,
+        faithful: false,
     };
     let entry = crate::BackendEntry {
         config: crate::BackendConfig {
@@ -1411,6 +1416,7 @@ fn the_run_answers_the_builders_own_check_during_its_turn() {
         decompiled: false,
         usage: None,
         self_check: Some((Arc::new(SheetKind), 90.0)),
+        faithful: false,
     };
     let mut builder = ChecksItsWork { root: ws.root.clone(), asked: None, reply: None };
     let reply = w.turn(&mut ws, &mut builder, "Build it.").unwrap();
@@ -1604,6 +1610,7 @@ fn a_note_the_builder_took_at_a_step_joins_the_feed_and_isnt_sent_again() {
         decompiled: false,
         usage: None,
         self_check: None,
+        faithful: false,
     };
     let dir = notes::notes_dir(&ws.inbox_dir());
     notes::hand_over(&dir, 1, "make the header blue").unwrap();

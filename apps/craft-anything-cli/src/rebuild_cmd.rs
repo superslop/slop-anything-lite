@@ -55,6 +55,10 @@ pub struct RebuildArgs {
     /// within the project's asset budget). Change it later with `project-assets-allow`.
     #[arg(long)]
     pub generate_assets: bool,
+    /// Faithful mode: upstream behaviour exactly — the likeness check governs and no
+    /// superslop styling is applied. Default is Slop mode (superslop style, Slop Gate).
+    #[arg(long)]
+    pub faithful: bool,
 }
 
 pub fn rebuild(cli: &Cli, a: &RebuildArgs) -> u8 {
@@ -128,6 +132,7 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
         max_rounds: a.rounds,
         good_enough,
         beginner: !cli.json,
+        faithful: a.faithful,
         kinds,
         ..RunOptions::default()
     };

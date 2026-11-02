@@ -48,6 +48,7 @@ pub mod project;
 pub mod question;
 pub mod runs;
 pub mod self_check;
+pub mod slop;
 pub mod stacks;
 pub mod stand_in;
 mod study;
@@ -133,6 +134,11 @@ pub struct RunOptions {
     pub max_rounds: u32,
     /// Stop refining once the build looks at least this alike (percent).
     pub good_enough: f64,
+    /// Faithful mode (this fork): upstream behaviour exactly — the likeness check
+    /// governs and no superslop styling is applied. `false` is Slop mode, the default:
+    /// website builds get the superslop instruction stack and are judged by the Slop
+    /// Gate instead of likeness (see `slop.rs`).
+    pub faithful: bool,
     pub beginner: bool,
     /// The kinds of thing this run can make (website, app, game, and any a fork registers).
     pub kinds: KindRegistry,
@@ -151,6 +157,7 @@ impl Default for RunOptions {
             continuing: false,
             max_rounds: 6,
             good_enough: 90.0,
+            faithful: false,
             beginner: true,
             kinds: KindRegistry::built_in(),
             adapters: Default::default(),
@@ -242,6 +249,7 @@ impl RebuildRun {
             decompiled: false,
             usage: Some(UsageClock { root: root.clone(), since: Instant::now() }),
             self_check: None,
+            faithful: opts.faithful,
         };
         let r2 = running.clone();
         std::thread::Builder::new()
@@ -418,6 +426,9 @@ struct Worker {
     usage: Option<UsageClock>,
     /// The kind and bar the builder's own checks (`rebuild_check`) are judged by, once known.
     self_check: Option<(Arc<dyn kinds::TargetKind>, f64)>,
+    /// Faithful mode for this run (see [`RunOptions::faithful`]): checks and briefs use
+    /// upstream behaviour, with no superslop styling or Slop Gate.
+    faithful: bool,
 }
 
 /// The project a run records its usage in, and when it last did.
@@ -639,6 +650,12 @@ impl Worker {
                 if api_loop { format!("{API_BUILDER}\n\n{b}") } else { b }
             }
         };
+        // Slop mode (this fork): a website build's brief carries the superslop house
+        // style. Faithful mode's prompt is upstream's, untouched.
+        if !opts.faithful && kind.id() == kinds::WebsiteKind::ID {
+            prompt.push_str("\n\n");
+            prompt.push_str(&slop::instructions());
+        }
         // The extraction step left the original's files in app/Original/: the builder starts from them.
         if first && ws.app_dir().join(ORIGINALS_MANIFEST).is_file() {
             prompt.push_str(ORIGINALS_READY);

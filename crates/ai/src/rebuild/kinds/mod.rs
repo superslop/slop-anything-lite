@@ -184,7 +184,22 @@ impl Worker {
             .into_iter()
             .filter(|c| c.kinds.is_empty() || c.kinds.iter().any(|k| k == kind.id()))
             .map(|check| Box::new(plugin_check::PluginJudge { check, kind: kind.id() }) as Box<dyn Check>);
-        for c in kind.checks(ws).into_iter().chain(plugin_checks) {
+        // Slop mode (this fork): a website build is judged by the Slop Gate instead of
+        // likeness. For a website target the gate wraps the visual check; for a
+        // request-only build it follows the kind's own checks (the build check), which
+        // stop the round first when they fail. Faithful mode is upstream's list as-is.
+        let checks: Vec<Box<dyn Check>> = if !self.faithful && kind.id() == website::WebsiteKind::ID {
+            if matches!(ws.manifest.target, TargetRef::Website { .. }) {
+                vec![Box::new(super::slop::SlopGateCheck { visual: true }) as Box<dyn Check>]
+            } else {
+                let mut v = kind.checks(ws);
+                v.push(Box::new(super::slop::SlopGateCheck { visual: false }));
+                v
+            }
+        } else {
+            kind.checks(ws)
+        };
+        for c in checks.into_iter().chain(plugin_checks) {
             if !c.applies(&cx) {
                 continue;
             }

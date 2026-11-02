@@ -1,0 +1,15 @@
+{
+  "name": "superslop",
+  "description": "The superslop skill/plugin. Super Slop: Maximalist AI Cliché Rules for AI Coding Agents.",
+  "owner": {
+    "name": "superslop"
+  },
+  "plugins": [
+    {
+      "name": "superslop",
+      "source": "./",
+      "version": "1.0.0",
+      "description": "Super Slop: Maximalist AI Cliché Rules for AI Coding Agents. Amplifies neon purple gradients, Bento grids, 'delve into the tapestry' prose, and ceremonial code comments—safely and ethically. Loads as six skills."
+    }
+  ]
+}

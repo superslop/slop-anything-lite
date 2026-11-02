@@ -1,0 +1,20 @@
+{
+  "name": "superslop",
+  "displayName": "superslop",
+  "version": "1.0.0",
+  "description": "Super Slop: Maximalist AI Cliché Rules for AI Coding Agents. Amplifies neon purple gradients, Bento grids, 'delve into the tapestry' prose, and ceremonial code comments—safely and ethically. Loads as six skills.",
+  "author": {
+    "name": "superslop"
+  },
+  "repository": "https://github.com/superslop/superslop",
+  "license": "MIT",
+  "keywords": ["superslop", "ai-slop", "design-rules", "copy-rules", "agent-skills", "ui", "parody"],
+  "skills": ["./skills/"],
+  "mcpServers": {
+    "superslop-contrast": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/.claude-plugin/slop-mcp-launcher.mjs"],
+      "env": {}
+    }
+  }
+}

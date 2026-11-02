@@ -1,0 +1,31 @@
+{
+  "name": "superslop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Super Slop: Maximalist AI Cliché Rules for AI Coding Agents.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "ai-slop",
+    "superslop",
+    "agent-skills",
+    "design-rules",
+    "copy-rules"
+  ],
+  "scripts": {
+    "sync-skills": "node scripts/sync-skills.mjs",
+    "check": "node scripts/check-repo.mjs"
+  },
+  "pi": {
+    "skills": ["./skills"]
+  },
+  "cline": {
+    "plugins": [
+      {
+        "paths": ["./.cline-plugin/plugin.js"],
+        "capabilities": ["skills"]
+      }
+    ]
+  }
+}

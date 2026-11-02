@@ -56,3 +56,10 @@ Generated projects are styled with the `superslop` skill suite from
 `superslop/superslop` (MIT License, Copyright (c) 2026 John Dhoe). That suite
 is vendored or referenced under its own licence text wherever it is included,
 separately from the upstream attribution above.
+
+Vendored copy: `third-party/superslop/`, pinned at commit
+`95067f878308793fbc9f4f89b1c958fa41901bea` (2026-10-29) of
+`superslop/superslop`, kept intact including its `LICENSE`. The rebuild
+workflow's Slop mode embeds its UI, copywriting, layout/mobile and human
+`SKILL.md` modules into website builders' briefs; the Slop Gate check reads
+the companion design tokens in `config/slop/design-tokens.json`.
