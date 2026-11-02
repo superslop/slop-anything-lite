@@ -152,7 +152,13 @@ pub fn evaluate(app: &Path, tokens: &Value) -> GateOutcome {
                     let fg = p.get("foreground")?.as_str()?.to_string();
                     let bg = p.get("background")?.as_str()?.to_string();
                     let ratio = contrast_ratio(&fg, &bg);
-                    Some(PairResult { use_: p.get("use").and_then(Value::as_str).unwrap_or_default().to_string(), foreground: fg, background: bg, ratio, passed: ratio >= min_ratio })
+                    Some(PairResult {
+                        use_: p.get("use").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        foreground: fg,
+                        background: bg,
+                        ratio,
+                        passed: ratio >= min_ratio,
+                    })
                 })
                 .collect()
         })
@@ -175,10 +181,7 @@ pub fn evaluate(app: &Path, tokens: &Value) -> GateOutcome {
         if p.passed {
             notes.push(format!("Contrast {} on {} is {:.2}:1 ({}).", p.foreground, p.background, p.ratio, p.use_));
         } else {
-            notes.push(format!(
-                "Contrast {} on {} is only {:.2}:1, below the {min_ratio:.1}:1 minimum ({}).",
-                p.foreground, p.background, p.ratio, p.use_
-            ));
+            notes.push(format!("Contrast {} on {} is only {:.2}:1, below the {min_ratio:.1}:1 minimum ({}).", p.foreground, p.background, p.ratio, p.use_));
         }
     }
     GateOutcome { palette_found, palette_passed, pairs, passed, note: notes.join(" ") }

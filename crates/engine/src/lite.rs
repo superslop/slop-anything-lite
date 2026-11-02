@@ -52,7 +52,17 @@ mod tests {
     }
 
     fn spec(id: &'static str, toolset: Toolset) -> ToolSpec {
-        ToolSpec { id, title: id, summary: "", beginner: "", toolset, effects: Effects::READ_ONLY, requires: Requires::Nothing, input_schema: empty_schema, run }
+        ToolSpec {
+            id,
+            title: id,
+            summary: "",
+            beginner: "",
+            toolset,
+            effects: Effects::READ_ONLY,
+            requires: Requires::Nothing,
+            input_schema: empty_schema,
+            run,
+        }
     }
 
     fn ids(specs: &[ToolSpec]) -> Vec<&'static str> {

@@ -1019,7 +1019,10 @@ mod tests {
         let a = adapter_for("generic-cli");
         assert!(!a.streams_json() && !a.resumes());
         let o = BackendOptions { args: vec!["run".into(), "--auto".into()], ..Default::default() };
-        assert_eq!(build_args(a.as_ref(), &o, "build it", "PRE:", &mcp(), Some("ignored-session"), Access::Analyse), vec!["run".to_string(), "--auto".to_string(), "PRE:build it".to_string()]);
+        assert_eq!(
+            build_args(a.as_ref(), &o, "build it", "PRE:", &mcp(), Some("ignored-session"), Access::Analyse),
+            vec!["run".to_string(), "--auto".to_string(), "PRE:build it".to_string()]
+        );
     }
 
     #[cfg(unix)]
