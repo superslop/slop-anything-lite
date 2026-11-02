@@ -29,10 +29,11 @@ Clean room as the default — with two changes:
 
 ## Status
 
-Scaffold phase. The engine code is still upstream code: crate and binary
-names are still `craft-anything-*`, and the provider and superslop features
-in the spec are planned work, not shipped features. The build order is at
-the bottom of `docs/slop/SPEC.md`.
+Scaffold phase. The engine code is upstream code, used as it is: its crates
+are internal workspace crates and keep their `craft-anything-*` names (see
+the decision in `docs/slop/SPEC.md`), and the provider and superslop
+features in the spec are planned work, not shipped features. The build
+order is at the bottom of `docs/slop/SPEC.md`.
 
 What already works is what upstream had working: the desktop app, the CLI,
 and the MCP server; the Study → Build → Check → Refine workflow for websites
@@ -49,8 +50,8 @@ started notes.
 ```sh
 git clone https://github.com/superslop/slop-anything-lite
 cd slop-anything-lite
-cargo run --release -p craft-anything        # desktop app (upstream name, for now)
-cargo install --path apps/craft-anything-cli # CLI, as craft-anything-cli (for now)
+cargo run --release -p craft-anything        # desktop app (internal name kept from upstream)
+cargo install --path apps/craft-anything-cli # CLI, as craft-anything-cli (internal name kept)
 ```
 
 Building a project (as opposed to studying one) needs a builder: an agent
