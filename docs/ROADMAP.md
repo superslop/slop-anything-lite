@@ -171,6 +171,11 @@ Owner: open · Status: done (branch chore/r0.5-cleanups)
 - [x] `macho.rs` `method_list`: `list + 8 + i * entsize` adds to a pointer read from the file, so a
       segment that ends at `u64::MAX` overflowed it (found by a lint scan; now reproduced by a
       regression test, and the entry addresses are checked)
+- [x] ELF files whose section headers were removed (common in NAS and router firmware, also big-endian
+      MIPS) show their dynamic symbols: `elf::dynamic_table` reads `DT_SYMTAB`/`DT_STRTAB` and the count
+      from `DT_HASH` or `DT_GNU_HASH` (moved out of `dart.rs`), `Binary` symbols, imports and exports are
+      filled from it, `elf::dynamic_symbols` reads versions through `DT_VERSYM`/`DT_VERDEF`/`DT_VERNEED`,
+      and the prologue scan walks executable segments (#223)
 
 ### R0.8 Tests never touch the real machine
 Owner: open · Status: done, except protecting `main` (a maintainer setting)
@@ -509,7 +514,7 @@ Owner: maintainers · Status: in progress (built; live runs need keys)
 ### R2.2 More coding agents
 Owner: open · Status: in progress
 - [x] `AcpConversation`: chat with agents that speak ACP (`cli_agents::acp`; agents and their ACP
-      arguments in `ACP_AGENTS`: Gemini CLI, Qwen Code, opencode, goose). Opt-in per backend
+      arguments in `ACP_AGENTS`: Gemini CLI, Qwen Code, opencode, goose, Hermes). Opt-in per backend
       (`acp = true` in its options); one agent process per chat, permission requests become
       consent questions, sessions continue with `session/load`
 - [x] Builder runs over ACP: with `acp = true`, rebuild runs use `AcpConversation`; the agent's
@@ -517,6 +522,14 @@ Owner: open · Status: in progress
       allowed, refused, or asked through the project's inbox; Auto mode honoured)
 - [ ] Gemini CLI, opencode, goose via ACP or native adapters; each verified live, then turn ACP on
       by default for the ones that pass
+- [ ] **decision** One approval behaviour across agents, and whether we want an auto-approve mode
+      apart from Clean room and Deep (Auto mode only governs what's asked through us). Today it
+      differs by agent: Claude Code asks our approval tool; OpenCode's builder runs with `--auto`;
+      Hermes's `-z` turns its approvals off on every run, chats included. Clean room's approval
+      rule doesn't reach an agent that never asks us
+- [ ] Say on each adapter, as typed data, what it can be held to (asks us, its own sandbox, nothing),
+      and have runs act on that, once the decision above is made
+- [ ] Check live what Hermes over ACP asks about: whether its file reads reach our approval policy
 
 ### R2.3 Website coverage and a better visual metric
 Owner: open · Status: done
@@ -1143,6 +1156,11 @@ Launch checklist (source-only first; signed installers can follow):
       `hdiutil create`, with the app inside the mounted image checked by `codesign --strict`; the
       FreeBSD workflow runs on main and packaging PRs (when public) with a package-contents check
 - [ ] Build the new DMG on a Mac (release dry run) and look at the window once
+- [ ] macOS CLI zip blocked by Gatekeeper when downloaded in a browser (#94), though Apple has its
+      notarization tickets: find why the online lookup fails for people (it passes on our Mac, which
+      may be exempt), on a machine that shows it
+- [ ] **decision** A standalone macOS CLI that can carry its ticket, such as a stapled `.pkg`; that
+      needs a Developer ID Installer certificate in the release secrets
 - [x] The first release: v0.1.0 built from `release`, signed (Apple Developer ID and notarization,
       Azure Trusted Signing) and published on 2026-10-31
 - [ ] Move the release workflows off actions that target Node.js 20 (`actions/checkout@v4`,

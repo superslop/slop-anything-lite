@@ -6,8 +6,10 @@
 use super::*;
 
 mod antigravity;
+mod hermes;
 mod opencode;
 pub use antigravity::Antigravity;
+pub use hermes::Hermes;
 pub use opencode::OpenCode;
 
 /// What a run's arguments are built from.
@@ -75,6 +77,12 @@ pub trait AgentAdapter: Send + Sync {
     fn sign_in_fix(&self) -> Option<String> {
         None
     }
+    /// Whether what a build needs from this computer is there, for an agent that's handed our tool
+    /// server, checked before a build starts. An agent that isn't handed it has nothing to check.
+    /// `stop` ends the check when the person stops the build.
+    fn check_tool_server(&self, _stop: &CancelToken) -> Result<(), ToolError> {
+        Ok(())
+    }
 }
 
 /// The adapters a run can use.
@@ -96,10 +104,18 @@ impl Default for AgentAdapters {
 }
 
 impl AgentAdapters {
-    /// Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and the Tier 3 generic adapter.
+    /// Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, the Tier 3 generic adapter and Hermes.
     pub fn built_in() -> AgentAdapters {
         AgentAdapters {
-            adapters: vec![Arc::new(ClaudeCode), Arc::new(Codex), Arc::new(GeminiCli), Arc::new(OpenCode), Arc::new(Antigravity), Arc::new(GenericCli)],
+            adapters: vec![
+                Arc::new(ClaudeCode),
+                Arc::new(Codex),
+                Arc::new(GeminiCli),
+                Arc::new(OpenCode),
+                Arc::new(Antigravity),
+                Arc::new(GenericCli),
+                Arc::new(Hermes),
+            ],
         }
     }
 
@@ -206,6 +222,10 @@ impl AgentAdapter for ClaudeCode {
 
     fn answers_questions(&self) -> bool {
         true
+    }
+
+    fn check_tool_server(&self, stop: &CancelToken) -> Result<(), ToolError> {
+        cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop)
     }
 
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
@@ -324,6 +344,10 @@ pub struct Codex;
 impl AgentAdapter for Codex {
     fn ids(&self) -> &'static [&'static str] {
         &["codex"]
+    }
+
+    fn check_tool_server(&self, stop: &CancelToken) -> Result<(), ToolError> {
+        cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop)
     }
 
     fn args(&self, cx: &ArgsCx) -> Vec<String> {

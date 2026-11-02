@@ -75,6 +75,37 @@ Building a project (as opposed to studying one) needs a builder: an agent
 CLI signed in on your computer, or an API key for one of the API backends,
 always your own. This tool never handles your credentials.
 
+## Downloads
+
+### macOS
+
+| Build | File | Notes |
+|---|---|---|
+| App, universal (Apple silicon + Intel) | `craft-anything-<ver>-macos-universal.dmg` | Signed and notarized |
+| Command-line tool, universal | `craft-anything-cli-<ver>-macos-universal.zip` | Signed and notarized; see below if macOS blocks it |
+
+Versions after 0.2.0 include the command-line tool in the app, so builds don't need the separate
+zip. You only need it to use the command line without the app.
+
+A browser download of the zip can stop with "Apple could not verify craft-anything-cli" (a lone
+program can't carry its notarization with it, so macOS has to look it up online). A download from
+the terminal isn't checked this way, so use this instead:
+
+```sh
+ver=0.2.0   # change this to the version you want
+curl -fLO "https://github.com/storytold/craft-anything/releases/download/v$ver/craft-anything-cli-$ver-macos-universal.zip"
+ditto -x -k "craft-anything-cli-$ver-macos-universal.zip" .
+mkdir -p ~/.local/bin
+mv "craft-anything-cli-$ver-macos-universal/craft-anything-cli" ~/.local/bin/
+~/.local/bin/craft-anything-cli --version
+```
+
+To run it as just `craft-anything-cli`, add `~/.local/bin` to your `PATH`.
+
+If you already have the blocked copy, press Done (not Move to Bin), then run
+`xattr -d com.apple.quarantine <path to craft-anything-cli>`, or allow it in System Settings →
+Privacy & Security → Open Anyway.
+
 ## License
 
 MIT, elected from upstream's MIT OR Apache-2.0 dual licence for this fork's

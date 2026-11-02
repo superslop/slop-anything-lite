@@ -729,8 +729,17 @@ pub fn effects(before: &[FileState], after: &[FileState], roots_exhausted: bool)
         match bmap.get(path) {
             None => out.push(Effect { path: (*path).to_string(), change: if roots_exhausted { "created" } else { "unknown" }, size: Some(a.size) }),
             Some(b) => {
-                let changed = b.sha256 != a.sha256 || b.size != a.size || b.kind != a.kind;
-                out.push(Effect { path: (*path).to_string(), change: if changed { "modified" } else { "unchanged" }, size: Some(a.size) });
+                let changed = b.size != a.size || b.kind != a.kind || b.symlink_target != a.symlink_target;
+                // A file left unhashed (over the hashing budget, or unreadable) may have been
+                // rewritten at the same size, so equal sizes don't make it unchanged (#229).
+                let change = if changed || (b.sha256.is_some() && a.sha256.is_some() && b.sha256 != a.sha256) {
+                    "modified"
+                } else if a.kind == "file" && (b.sha256.is_none() || a.sha256.is_none()) {
+                    "unknown"
+                } else {
+                    "unchanged"
+                };
+                out.push(Effect { path: (*path).to_string(), change, size: Some(a.size) });
             }
         }
     }
@@ -741,6 +750,26 @@ pub fn effects(before: &[FileState], after: &[FileState], roots_exhausted: bool)
     }
     out.sort_by(|x, y| x.path.cmp(&y.path));
     out
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+
+    /// #229: a same-size rewrite of a file neither snapshot hashed isn't known to be unchanged.
+    #[test]
+    fn an_unhashed_file_of_the_same_size_is_unknown() {
+        let file = |sha: Option<&str>| FileState { path: "data.bin".into(), kind: "file", size: 10, sha256: sha.map(str::to_string), symlink_target: None };
+        let link = |to: &str| FileState { path: "l".into(), kind: "symlink", size: 1, sha256: None, symlink_target: Some(to.into()) };
+        let change = |b: FileState, a: FileState| effects(&[b], &[a], true).first().map(|e| e.change);
+        assert_eq!(change(file(None), file(None)), Some("unknown"));
+        assert_eq!(change(file(Some("aa")), file(None)), Some("unknown"));
+        assert_eq!(change(file(Some("aa")), file(Some("aa"))), Some("unchanged"));
+        assert_eq!(change(file(Some("aa")), file(Some("bb"))), Some("modified"));
+        assert_eq!(change(file(None), FileState { size: 11, ..file(None) }), Some("modified"));
+        assert_eq!(change(link("a"), link("a")), Some("unchanged"));
+        assert_eq!(change(link("a"), link("b")), Some("modified"), "a symlink pointed elsewhere at the same length");
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -917,15 +946,19 @@ mod unix {
                 if spec.finalization > Duration::ZERO {
                     send_group(pid, Signal::SIGTERM);
                     finalized_with = Some("SIGTERM".into());
+                    // Wait for the whole group, not just the leader: a helper can outlive it (#230).
+                    // Reaping the leader as we go keeps a zombie from counting as alive.
                     let deadline = Instant::now() + spec.finalization;
                     while Instant::now() < deadline {
-                        if matches!(child.try_wait(), Ok(Some(_))) {
+                        let _ = child.try_wait();
+                        if !group_alive(pid) {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 }
-                if !matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.try_wait();
+                if group_alive(pid) {
                     send_group(pid, Signal::SIGKILL);
                     finalized_with = Some("SIGKILL".into());
                 }
@@ -1081,6 +1114,11 @@ mod unix {
         }
     }
 
+    /// Whether any process of the group led by `pid` is left (signal 0 probes without delivering).
+    fn group_alive(pid: i32) -> bool {
+        killpg(Pid::from_raw(pid), None).is_ok()
+    }
+
     /// Poll the process group until it is empty or the settle deadline passes.
     fn settle(leader: Option<u32>, settle: Duration) -> Settlement {
         let pid = match leader.and_then(|p| i32::try_from(p).ok()) {
@@ -1089,9 +1127,7 @@ mod unix {
         };
         let deadline = Instant::now() + settle;
         loop {
-            // Signal 0 probes existence of the group without delivering a signal.
-            let alive = killpg(Pid::from_raw(pid), None).is_ok();
-            if !alive {
+            if !group_alive(pid) {
                 return Settlement { status: "settled".into() };
             }
             if Instant::now() >= deadline {
@@ -1167,6 +1203,36 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(5));
         assert_eq!(cap.exit.reason, "timeout");
         assert_eq!(cap.cleanup.process_group, "verified");
+    }
+
+    /// #230: with a grace period, the leader exits on SIGTERM; a helper that ignores it used to
+    /// be left running because only the leader was waited for.
+    #[test]
+    fn graceful_timeout_kills_a_helper_that_outlives_the_leader() {
+        if !sh_available() {
+            return;
+        }
+        let script = "/bin/sh -c 'trap \"\" TERM HUP; exec /bin/sleep 12' & exec /bin/sleep 12";
+        let spec = Spec {
+            executable: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            cwd: None,
+            env: Vec::new(),
+            terminal: Terminal::default(),
+            events: Vec::new(),
+            timeout: Duration::from_millis(500),
+            idle_timeout: Duration::from_secs(30),
+            settle: Duration::from_millis(500),
+            finalization: Duration::from_millis(500),
+            observation_paths: Vec::new(),
+            limits: Limits::default(),
+            sandbox: SandboxRequest::Off,
+        };
+        let cap = capture(spec, no_cancel()).unwrap();
+        assert_eq!(cap.exit.reason, "timeout");
+        assert_eq!(cap.settlement.status, "settled");
+        assert_eq!(cap.cleanup.process_group, "verified");
+        assert_eq!(cap.exit.finalized_with.as_deref(), Some("SIGKILL"), "the helper needed SIGKILL");
     }
 
     #[test]
