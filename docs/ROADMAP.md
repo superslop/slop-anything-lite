@@ -154,9 +154,9 @@ Owner: open · Status: done (branch chore/r0.5-cleanups)
 - [x] The Agent console keeps its size: its history and prompt box came out 17 points taller than
       the bottom panel, which grew by that every frame until its maximum and then cut off the top
       of the Agent / Jobs / Log tabs (`chat::conversation`)
-- [ ] `yaxpeax-arm` 0.5.0 panics ("register number out of range") on an A32 `STRD`/`LDRD` with
-      Rt = 15 (e.g. the word `0xc0c7fef3`), so one such word fails the whole analysis of a 32-bit
-      ARM program; decode it as invalid instead
+- [x] `yaxpeax-arm` 0.5.0 panicked ("register number out of range") on an A32 `STRD`/`LDRD` with
+      Rt = 15 (e.g. the word `0xc0c7fef3`), so one such word failed the whole analysis of a 32-bit
+      ARM program; the word now decodes as invalid
 - [x] Unchecked `o + 4`/`o + 8` on section and program header offsets in `formats/src/dart.rs`
       (`Elf::parse`): a header table near `usize::MAX` panicked in debug builds (in release the
       wrapped reads were thrown away, since the entry's first field was already out of range); an
@@ -168,8 +168,9 @@ Owner: open · Status: done (branch chore/r0.5-cleanups)
 - [x] rustfmt drift on main (11 files)
 - [x] Checked arithmetic on file offsets in `fsread/extfs.rs`: an inode offset near `usize::MAX`
       overflows `o + 128` (two sites), found by a lint scan of `crates/formats` (#42)
-- [ ] `macho.rs` `method_list`: `list + 8 + i * entsize` adds to a pointer read from the file, so a
-      segment that ends at `u64::MAX` overflows it (a lint scan flagged it; not reproduced yet)
+- [x] `macho.rs` `method_list`: `list + 8 + i * entsize` adds to a pointer read from the file, so a
+      segment that ends at `u64::MAX` overflowed it (found by a lint scan; now reproduced by a
+      regression test, and the entry addresses are checked)
 
 ### R0.8 Tests never touch the real machine
 Owner: open · Status: done, except protecting `main` (a maintainer setting)
