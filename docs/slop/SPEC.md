@@ -75,6 +75,15 @@ Three tiers, in the order they will be verified. A tier is listed as
 supported only after a live build has been run with it in this fork; upstream
 test status is recorded as upstream status, not as ours.
 
+**Verification policy change (2026-11-02, user decision):** the user holds
+no accounts or API access for the individual providers, so live end-to-end
+verification is waived. Builders and backends are implemented and wired so
+they are selectable and runnable; the acceptance bar is compilation, the
+existing protocol/unit tests, and the CI gate. Status wording in this fork
+is "implemented, not live-verified" until a live build happens. The build
+order items 10 and 11 therefore mean implementation and wiring, not live
+runs.
+
 ### Tier 1 — agent CLI builders
 
 The builder is the person's own, unmodified agent program, run as a child
@@ -165,8 +174,11 @@ existing checks, so Faithful mode simply does not select it.
 7. Point workspace repository metadata at this fork. (commit: chore)
 8. Push, and verify the upstream CI gate passes on the unmodified core.
 9. LITE trim behind feature gates.
-10. Tier 1 verification: Codex live build, then ACP builders.
-11. Tier 2 verification: one live API build per backend, OpenRouter first.
+10. Tier 1 implementation: all agent CLI builders selectable and wired
+    (Codex incl. resume where the agent supports it; ACP builders).
+11. Tier 2 implementation: the API loop wired to every backend in
+    `config/slop/providers.toml` (OpenRouter, Anthropic, OpenAI,
+    OpenAI-compatible/local), plus the Tier 3 generic CLI adapter.
 12. Slop Gate check and the builder instruction stack.
 13. Binary and display rename only: the apps' binary names and UI display
     strings. Internal crate names stay `craft-anything-*` (decision above).
