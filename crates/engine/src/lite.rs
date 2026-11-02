@@ -107,7 +107,7 @@ mod tests {
         assert!(lite.iter().all(|s| !is_gated(s)));
         // Kept families the fork's core workflow needs.
         for id in ["core_target_open", "db_sqlite_show"] {
-            assert_eq!(all.iter().any(|s| s.id == id), true, "{id} exists upstream of the filter");
+            assert!(all.iter().any(|s| s.id == id), "{id} exists upstream of the filter");
         }
         assert!(lite.iter().any(|s| s.id == "core_target_open"), "essentials survive the filter");
         assert!(!lite.iter().any(|s| s.id == "db_sqlite_show"), "the database family is hidden");
