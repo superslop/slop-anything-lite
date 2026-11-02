@@ -1,8 +1,9 @@
 # Slop Anything LITE — builder and provider catalogue (scaffold, data only).
 #
-# This file is NOT wired into the engine yet. It is the typed catalogue the
-# provider work will read, kept as data instead of prompt text or string
-# matches, per the design spec in docs/slop/SPEC.md.
+# This file is read by crates/ai/src/catalogue.rs (with a copy embedded at
+# build time as the fallback) and shown by `slop-anything-cli ai catalogue`.
+# It is kept as data instead of prompt text or string matches, per the
+# design spec in docs/slop/SPEC.md.
 #
 # Rules:
 # - No secrets in this file. `api_key_env` names an environment variable only.
@@ -21,7 +22,7 @@ id = "claude-code"
 kind = "agent-cli"
 program = "claude"
 upstream_status = "fully wired; live builder turns run upstream"
-lite_status = "inherited; re-verification pending"
+lite_status = "implemented (inherited wiring), not live-verified"
 resume = true
 
 [[builders]]
@@ -29,15 +30,15 @@ id = "codex"
 kind = "agent-cli"
 program = "codex"
 upstream_status = "works through its own flags; unverified on a real install; no resume"
-lite_status = "first verification target"
-resume = false
+lite_status = "implemented incl. thread resume, not live-verified"
+resume = true
 
 [[builders]]
 id = "gemini-cli"
 kind = "acp"
 program = "gemini"
 upstream_status = "ACP protocol unit tests only; never run against a real agent"
-lite_status = "planned"
+lite_status = "implemented (ACP), not live-verified"
 resume = false
 
 [[builders]]
@@ -45,7 +46,7 @@ id = "qwen-code"
 kind = "acp"
 program = "qwen"
 upstream_status = "ACP protocol unit tests only; never run against a real agent"
-lite_status = "planned"
+lite_status = "implemented (ACP), not live-verified"
 resume = false
 
 [[builders]]
@@ -53,7 +54,7 @@ id = "opencode"
 kind = "acp"
 program = "opencode"
 upstream_status = "ACP protocol unit tests only; never run against a real agent"
-lite_status = "planned"
+lite_status = "implemented (ACP), not live-verified"
 resume = false
 
 [[builders]]
@@ -61,7 +62,7 @@ id = "goose"
 kind = "acp"
 program = "goose"
 upstream_status = "ACP protocol unit tests only; never run against a real agent"
-lite_status = "planned"
+lite_status = "implemented (ACP), not live-verified"
 resume = false
 
 [[builders]]
@@ -69,7 +70,7 @@ id = "generic-cli"
 kind = "generic-cli"
 program = ""
 upstream_status = "other agent programs get plain text in and out"
-lite_status = "planned; lowest-assurance tier, labelled as such in the UI"
+lite_status = "implemented (Tier 3 generic adapter), not live-verified; lowest-assurance tier, labelled as such"
 resume = false
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,7 @@ api_style = "anthropic"
 base_url = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
 upstream_status = "loop built upstream; no live API build run at fork time"
-lite_status = "planned"
+lite_status = "implemented, not live-verified"
 
 [[backends]]
 id = "openai"
@@ -92,7 +93,7 @@ api_style = "openai"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 upstream_status = "loop built upstream; no live API build run at fork time"
-lite_status = "planned"
+lite_status = "implemented, not live-verified"
 
 [[backends]]
 id = "openrouter"
@@ -101,7 +102,7 @@ api_style = "openai"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 upstream_status = "loop built upstream; no live API build run at fork time"
-lite_status = "first API verification target; one key, many model families"
+lite_status = "implemented, not live-verified; one key, many model families"
 
 [[backends]]
 id = "local-openai-compatible"
@@ -110,4 +111,4 @@ api_style = "openai"
 base_url = "http://127.0.0.1:11434/v1"
 api_key_env = ""
 upstream_status = "local backend exists upstream; no live API build run at fork time"
-lite_status = "planned; base_url is a starting point and is user-configurable"
+lite_status = "implemented, not live-verified; base_url is a starting point and is user-configurable"

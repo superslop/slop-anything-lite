@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod anthropic;
+pub mod catalogue;
 pub mod cli_agents;
 pub mod config;
 pub mod context;
@@ -67,7 +68,7 @@ impl BackendKind {
             BackendKind::Openai => &[openai::OPENAI_DEFAULT_MODEL],
             BackendKind::Openrouter => openai::OPENROUTER_MODELS,
             BackendKind::OpenaiCompatible => &[],
-            BackendKind::AgentCli => &["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "hermes"],
+            BackendKind::AgentCli => &["claude-code", "codex", "gemini-cli", "qwen-code", "opencode", "goose", "antigravity", "hermes", "generic-cli"],
         }
     }
 

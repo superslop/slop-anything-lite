@@ -96,9 +96,11 @@ impl Default for AgentAdapters {
 }
 
 impl AgentAdapters {
-    /// Claude Code, Codex, Gemini CLI, OpenCode and Antigravity.
+    /// Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and the Tier 3 generic adapter.
     pub fn built_in() -> AgentAdapters {
-        AgentAdapters { adapters: vec![Arc::new(ClaudeCode), Arc::new(Codex), Arc::new(GeminiCli), Arc::new(OpenCode), Arc::new(Antigravity)] }
+        AgentAdapters {
+            adapters: vec![Arc::new(ClaudeCode), Arc::new(Codex), Arc::new(GeminiCli), Arc::new(OpenCode), Arc::new(Antigravity), Arc::new(GenericCli)],
+        }
     }
 
     /// Add an adapter; it takes over any ids it shares with one already registered.
@@ -119,6 +121,31 @@ pub struct Plain;
 impl AgentAdapter for Plain {
     fn ids(&self) -> &'static [&'static str] {
         &[]
+    }
+    fn args(&self, cx: &ArgsCx) -> Vec<String> {
+        let mut a = cx.options.args.clone();
+        a.push(format!("{}{}", cx.preamble, cx.prompt));
+        a
+    }
+    fn streams_json(&self) -> bool {
+        false
+    }
+}
+
+/// Tier 3 (this fork): a named, config-driven generic adapter for any other agent
+/// program — the lowest-assurance tier, labelled as such wherever builders are listed.
+/// The person's backend config names the program (`command`) and any arguments that
+/// come before the prompt (`args`); the prompt goes in as the last argument and the
+/// program's output comes back as plain text. There is no MCP registration, no
+/// structured approval routing and no session resume: the project-folder rules are
+/// the only contract. Behaviour matches [`Plain`]; what the registration adds is the
+/// stable id (`generic-cli`, from the provider catalogue) a person can select on
+/// purpose instead of falling back by accident.
+pub struct GenericCli;
+
+impl AgentAdapter for GenericCli {
+    fn ids(&self) -> &'static [&'static str] {
+        &["generic-cli"]
     }
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
         let mut a = cx.options.args.clone();
@@ -300,7 +327,13 @@ impl AgentAdapter for Codex {
     }
 
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
-        let mut v = vec!["exec".to_string(), "--json".into()];
+        let mut v = vec!["exec".to_string()];
+        // Continuing a thread: `codex exec resume <thread-id>` (the id the parser took
+        // from the run's `thread_id`). The flags after it are the same as a fresh run's.
+        if let Some(r) = cx.resume {
+            v.extend(["resume".into(), r.to_string()]);
+        }
+        v.push("--json".into());
         // Project folders aren't git repositories, and `codex exec` refuses to run outside one
         // without this (#69). Not twice: it may already be in the backend's own args.
         const SKIP_GIT: &str = "--skip-git-repo-check";
@@ -328,6 +361,11 @@ impl AgentAdapter for Codex {
     /// Plain `codex <prompt>` is the interactive TUI: "stdin is not a terminal".
     fn plain_fallback(&self) -> bool {
         false
+    }
+
+    /// Threads continue with `codex exec resume <thread-id>` (see `args`).
+    fn resumes(&self) -> bool {
+        true
     }
 
     fn parse(&self, p: &mut StreamParser, v: &Value) -> Vec<AgentEvent> {

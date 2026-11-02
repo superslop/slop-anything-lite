@@ -747,6 +747,10 @@ mod tests {
         assert!(a.contains(&"mcp_servers.craft-anything.command=\"/opt/ca/craft-anything-cli\"".to_string()));
         assert!(a.contains(&"mcp_servers.craft-anything.args=[\"mcp\", \"--project\", \"/p/x.cany\"]".to_string()));
         assert_eq!(a.last().unwrap(), "P:q");
+        // A saved thread continues with `exec resume <id>`; the rest of the flags follow.
+        let r = build_args(adapter_for("codex").as_ref(), &BackendOptions::default(), "q", "P:", &mcp(), Some("thread-9"), Access::Analyse);
+        assert_eq!(&r[..3], &["exec".to_string(), "resume".to_string(), "thread-9".to_string()]);
+        assert!(r.contains(&"--json".to_string()));
         let g = build_args(adapter_for("gemini-cli").as_ref(), &BackendOptions::default(), "q", "", &mcp(), None, Access::Analyse);
         assert!(g.windows(2).any(|w| w[0] == "--output-format" && w[1] == "stream-json"));
         let o = BackendOptions { args: vec!["run".into()], ..Default::default() };
@@ -1010,6 +1014,39 @@ mod tests {
     }
 
     #[test]
+    fn the_generic_cli_adapter_is_config_driven_plain_text() {
+        // Tier 3: the backend's own args come first, the prompt last; no JSON stream, no resume.
+        let a = adapter_for("generic-cli");
+        assert!(!a.streams_json() && !a.resumes());
+        let o = BackendOptions { args: vec!["run".into(), "--auto".into()], ..Default::default() };
+        assert_eq!(build_args(a.as_ref(), &o, "build it", "PRE:", &mcp(), Some("ignored-session"), Access::Analyse), vec!["run".to_string(), "--auto".to_string(), "PRE:build it".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_generic_cli_tier_runs_a_scripted_fake_binary() {
+        // `echo` stands in for any agent program the person's config names: Tier 3 drives it
+        // with plain text in and out, through the owned-process runner like every adapter.
+        let spec = CliSpec::new(
+            BackendConfig { name: "Fake".into(), kind: BackendKind::AgentCli, model: "generic-cli".into(), base_url: None, ssh_host: None, enabled: true },
+            BackendOptions { command: Some("echo".into()), args: vec!["tier3:".into()], ..Default::default() },
+            true,
+            None,
+        );
+        let mut c = CliConversation::new(spec);
+        c.send("hello there");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+            all.extend(c.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let text: String = all.iter().filter_map(|e| if let AgentEvent::TextDelta { text } = e { Some(text.clone()) } else { None }).collect();
+        assert!(text.contains("tier3:"), "{all:?}");
+        assert!(text.contains("hello there"), "{all:?}");
+    }
+
+    #[test]
     fn missing_cli_is_a_clear_error() {
         let spec = CliSpec::new(
             BackendConfig {
@@ -1078,9 +1115,9 @@ mod tests {
         assert!(matches!(p.line(r#"{"say":"hello"}"#).as_slice(), [AgentEvent::TextDelta { text }] if text == "hello"));
         // Unknown agents stream their output as text; the built-ins keep their own adapters.
         assert!(!reg.for_agent("aider").streams_json());
-        assert!(reg.for_agent("claude").resumes() && !reg.for_agent("codex").resumes() && reg.for_agent("antigravity").resumes());
+        assert!(reg.for_agent("claude").resumes() && reg.for_agent("codex").resumes() && reg.for_agent("antigravity").resumes());
         // Registering an adapter for an existing id replaces that one.
         reg.register(Arc::new(EchoAgent));
-        assert_eq!(format!("{reg:?}"), r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "echo-agent"]"#);
+        assert_eq!(format!("{reg:?}"), r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "generic-cli", "echo-agent"]"#);
     }
 }

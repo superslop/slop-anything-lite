@@ -29,6 +29,8 @@ pub struct ChatArgs {
 pub enum AiCommand {
     /// Configured backends.
     List,
+    /// The fork's builder and provider catalogue (config/slop/providers.toml).
+    Catalogue,
     /// Look for keys, local servers, agent CLIs and SSH hosts.
     Detect,
     /// Add a backend.
@@ -189,6 +191,13 @@ pub fn ai(cli: &Cli, c: &AiCommand, f: Format) -> u8 {
         Err(e) => return fail(&e, f),
     };
     match c {
+        AiCommand::Catalogue => match craft_anything_ai::catalogue::load() {
+            Ok(loaded) => {
+                emit(&json!({"source": loaded.source, "builders": loaded.catalogue.builders, "backends": loaded.catalogue.backends}), f);
+                0
+            }
+            Err(e) => fail(&e, f),
+        },
         AiCommand::List => {
             let v: Vec<Value> = hub
                 .backends()
