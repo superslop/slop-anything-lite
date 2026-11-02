@@ -118,6 +118,8 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
     // A follow-up shows in the project's feed as the person typed it.
     let shown = message.clone();
     let good_enough = engine.session().settings.build.good_enough;
+    // The LITE profile has no game rebuilds; --full (or SLOP_ANYTHING_FULL=1) brings them back.
+    let kinds = if crate::full_profile() { RunOptions::default().kinds } else { RunOptions::default().kinds.without("game") };
     let opts = RunOptions {
         backend: a.backend.clone(),
         message,
@@ -126,6 +128,7 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
         max_rounds: a.rounds,
         good_enough,
         beginner: !cli.json,
+        kinds,
         ..RunOptions::default()
     };
     let mut run = RebuildRun::start(&hub, ws, opts)?;

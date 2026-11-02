@@ -9,6 +9,7 @@ pub mod clean_room;
 pub mod feed;
 pub mod inbox;
 pub mod journal;
+pub mod lite;
 pub mod mechanics;
 pub mod outputs;
 pub mod pins;
@@ -127,8 +128,16 @@ impl Engine {
     /// owned names and a JSON schema, served by a function that can tell them apart by
     /// [`Ctx::tool`]. Invalid or duplicate ones are skipped and logged.
     pub fn shared_with(session: Session, extra: Vec<ToolSpec>, runtime: Vec<registry::RuntimeTool>) -> std::sync::Arc<Engine> {
+        Self::shared_with_profile(session, extra, runtime, true)
+    }
+
+    /// [`Engine::shared_with`] with a tool profile: `full = false` applies the fork's LITE
+    /// profile ([`crate::lite`]), hiding the tool families it gates from this engine's
+    /// registry. The CLI and the MCP server it hosts run LITE unless `--full` is given.
+    pub fn shared_with_profile(session: Session, extra: Vec<ToolSpec>, runtime: Vec<registry::RuntimeTool>, full: bool) -> std::sync::Arc<Engine> {
         let mut tools = tools::all();
         tools.extend(extra);
+        let tools = crate::lite::filter_tools(tools, full);
         std::sync::Arc::new_cyclic(|me| {
             let mut session = session;
             session.ext.insert(std::sync::Arc::new(EngineRef(me.clone())));

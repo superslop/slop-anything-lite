@@ -23,6 +23,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+/// Set from `--full` before any engine is made: the LITE profile is off for this process.
+pub static FULL_PROFILE: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process shows every tool (the `--full` flag or `SLOP_ANYTHING_FULL=1`).
+pub fn full_profile() -> bool {
+    FULL_PROFILE.load(Ordering::Relaxed) || craft_anything_engine::lite::full_profile()
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "slop-anything-cli", version, about = "Slop Anything LITE on the command line: every tool, the MCP server, setup and doctor.")]
 #[command(after_help = "Every tool is also a subcommand: `slop-anything-cli commands` lists them, `slop-anything-cli <tool> --help` shows its options.\n\
@@ -46,6 +54,11 @@ pub struct Cli {
     /// Clean room for this run only, whatever Settings say: nothing inside a target is read.
     #[arg(long, global = true)]
     pub clean_room: bool,
+    /// Show every tool, including the families the LITE profile hides (firmware, packets,
+    /// databases, radio, game archives, stand-in backends, hosted asset generation).
+    /// The SLOP_ANYTHING_FULL=1 environment variable does the same.
+    #[arg(long, global = true)]
+    pub full: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -134,6 +147,9 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
+    if cli.full {
+        FULL_PROFILE.store(true, Ordering::Relaxed);
+    }
     let code = run(cli);
     if INTERRUPTED.load(Ordering::SeqCst) { ExitCode::from(130) } else { ExitCode::from(code) }
 }
@@ -202,7 +218,7 @@ pub fn make_engine(project: Option<&Path>, deep_for_run: Option<bool>) -> Result
     let plugins = craft_anything_engine::plugins::install(&mut session);
     let mut layer_tools = craft_anything_ai::tools();
     layer_tools.extend(craft_anything_setup::tools::specs());
-    Ok(Engine::shared_with(session, layer_tools, plugins))
+    Ok(Engine::shared_with_profile(session, layer_tools, plugins, full_profile()))
 }
 
 fn open_or_create_project(dir: &Path) -> Result<Project, ToolError> {
@@ -470,7 +486,7 @@ fn tool(cli: &Cli, args: &[String], f: Format) -> u8 {
     if deep && clean_room {
         return usage("--deep and --clean-room can't be used together");
     }
-    let mut cli = Cli { format: f, json: false, project: cli.project.clone(), allow_run, deep, clean_room, command: Command::Commands };
+    let mut cli = Cli { format: f, json: false, project: cli.project.clone(), allow_run, deep, clean_room, full: false, command: Command::Commands };
     let mut engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
         Ok(e) => e,
         Err(e) => return fail(&e, f),

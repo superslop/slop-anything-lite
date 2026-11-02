@@ -269,6 +269,12 @@ impl KindRegistry {
         self.kinds.push(kind);
     }
 
+    /// Drop a kind by id (this fork's LITE profile drops the game kind on the CLI surface).
+    pub fn without(mut self, id: &str) -> Self {
+        self.kinds.retain(|k| k.id() != id);
+        self
+    }
+
     pub fn get(&self, id: &str) -> Option<Arc<dyn TargetKind>> {
         self.kinds.iter().find(|k| k.id() == id).cloned()
     }
