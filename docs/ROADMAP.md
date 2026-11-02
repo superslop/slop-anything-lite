@@ -141,6 +141,8 @@ No `deny.toml` exists. The survey found no GPL, AGPL or SSPL crates, and only MP
 
 ### R0.5 Small correctness items from the survey
 Owner: open · Status: done (branch chore/r0.5-cleanups)
+- [x] Decode Objective-C chained pointer offsets past file-empty PAGEZERO mappings (#296).
+- [x] Recognise root-relative macOS bundles and nested XPC services in Apple app graphs (#282).
 - [x] Checked arithmetic on file offsets in `elf.rs`: `va_to_off` adds a segment's file offset to an
       address delta unchecked, so a `PT_LOAD` at offset `u64::MAX` overflows, found by a lint scan
       of `crates/formats` (#43)
@@ -792,6 +794,8 @@ Gaps found while using the app for real projects.
       ([localisation](localization.md))
 - [ ] A Simplified Chinese README (`README.zh.md`) translated from `README.md`, linked from the
       language switcher in `README.md` and `README.ja.md` — claimed: maple323, branch docs/readme-zh
+- [x] A Korean README (`README.ko.md`) was translated from `README.md` and linked from the
+      language switcher in every README
 - [ ] `README.ja.md` is behind `README.md`: the whole Craft App Suite section is missing, so the
       Japanese translation needs a catch-up pass
 - [x] First run sets up who builds, not only who answers, and no longer says the purpose is saved
