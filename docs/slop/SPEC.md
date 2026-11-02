@@ -57,8 +57,17 @@ Cut or feature-gated off in the LITE build:
 - HAR stand-in backends.
 
 Machine names (`craft-anything-*` crates and binaries, the bundle id) are
-unchanged in the scaffold phase. Renaming them is a separate, later series;
-it is deliberately not mixed into the identity and documentation commits.
+unchanged in the scaffold phase.
+
+**Decision (2026-11-02): the internal crates keep their upstream names
+permanently.** The engine is 13 internal workspace crates consumed as path
+dependencies (`publish = false`; they are not crates.io libraries). This
+fork uses them as they are. Renaming them would touch every manifest, every
+`craft_anything_*` import, the layer registry, and persisted format strings,
+for no functional gain — and it would make merging upstream changes (the
+upstream project is actively developed) permanently harder. Keeping the
+names keeps upstream sync a plain merge. Only the user-facing binary and
+display names may change later; see the build order.
 
 ## AI builders and providers
 
@@ -159,4 +168,7 @@ existing checks, so Faithful mode simply does not select it.
 10. Tier 1 verification: Codex live build, then ACP builders.
 11. Tier 2 verification: one live API build per backend, OpenRouter first.
 12. Slop Gate check and the builder instruction stack.
-13. Machine-name rename series (`craft-anything-*` to `slop-anything-*`).
+13. Binary and display rename only: the apps' binary names and UI display
+    strings. Internal crate names stay `craft-anything-*` (decision above).
+14. Periodic upstream sync: merge `storytold/craft-anything` main, keeping
+    the fork's commits (provenance, spec, config, rebrand) easy to re-apply.
