@@ -56,7 +56,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_play",
             title: "Play a project's result",
-            summary: "Start the finished game or app a project built (its program, a Unity or Unreal package, or a Godot project in Godot), in its own window. If it's already running, says so instead of starting a second copy, unless `another` is true. A start that quits within two seconds is reported with its exit code and last output. It runs the code the builder wrote, so it needs the person's consent. Websites use project_preview instead.",
+            summary: "Start the finished game or app a project built (its program, a Unity or Unreal package, or a Godot project in Godot), in its own window. If it's already running, says so instead of starting a second copy, unless `another` is true. A start that quits within two seconds is reported with its exit code and last output. It runs the code the builder wrote, so it needs the person's consent. Websites use project_preview instead. Known limit on Windows: when the caller's output is a pipe, the started program inherits it, so a caller reading that output to its end waits until the program exits (#207).",
             beginner: "Opens the game or app that was made.",
             toolset: Toolset::Projects,
             effects: Effects::LAUNCHES_PROCESS.union(Effects::EXECUTES_FOREIGN_CODE),
@@ -129,6 +129,17 @@ pub fn specs() -> Vec<ToolSpec> {
             requires: Requires::Nothing,
             input_schema: schema_of::<QuestionsParams>,
             run: project_questions_set,
+        },
+        ToolSpec {
+            id: "project_build_finish",
+            title: "Call the build done",
+            summary: "The person is happy with the build as it is (#210): its status becomes Ready and the conversation says they called it done, so a paused, stopped or failed build no longer offers to carry on. Everything so far is kept, and a new message carries on from here. It doesn't stop a build that is still running: pause it first.",
+            beginner: "Keeps the build as it is and stops offering to carry on.",
+            toolset: Toolset::Projects,
+            effects: Effects::WRITES_FILESYSTEM,
+            requires: Requires::Nothing,
+            input_schema: schema_of::<FinishParams>,
+            run: project_build_finish,
         },
         ToolSpec {
             id: "project_assets_budget",
@@ -290,6 +301,27 @@ pub enum QuestionsChoice {
     Decide,
     /// The app's setting.
     Default,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FinishParams {
+    /// The project's folder.
+    pub project: PathBuf,
+}
+
+/// What the conversation and the project say when the person calls a build done.
+pub const CALLED_DONE: &str = "Ready: you called it done. Everything so far is kept; a new message carries on from here.";
+
+fn project_build_finish(_ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+    use crate::workspace::{Status, Step};
+    let p: FinishParams = parse_params(params)?;
+    let mut ws = open(&p.project)?;
+    ws.set_status(Status::Ready, CALLED_DONE)?;
+    let mut items = feed::load(&ws);
+    items.push(feed::FeedItem::Step { step: Step::Done, text: CALLED_DONE.into() });
+    feed::save(&ws.root, &items)?;
+    Ok(ToolOutput::Value(json!({"project": ws.root, "status": ws.manifest.status})))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -517,6 +549,28 @@ mod tests {
     use crate::inbox::RequestKind;
     use crate::workspace::TargetRef;
     use crate::{CallOptions, Caller, Engine};
+
+    /// #210: "enough now". A paused build becomes Ready, says so in its conversation, and keeps
+    /// everything it had.
+    #[test]
+    fn a_build_called_done_is_ready_and_says_so() {
+        use crate::workspace::{Status, Step};
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(d.path(), "Site", "A website", TargetRef::None).unwrap();
+        ws.set_status(Status::Stopped, "Paused.").unwrap();
+        let e = Engine::new(crate::testing::session());
+        let r = e.call("project_build_finish", json!({"project": ws.root}), CallOptions::new(Caller::Cli)).unwrap().to_json();
+        assert_eq!(r["result"]["status"], "ready", "{r}");
+        let ws = Workspace::open(&ws.root).unwrap();
+        assert_eq!((ws.manifest.status, ws.manifest.note.as_str()), (Status::Ready, CALLED_DONE));
+        let items = feed::load(&ws);
+        assert!(
+            matches!(items.as_slice(), [feed::FeedItem::User(a), feed::FeedItem::Step { step: Step::Done, text }] if a == "A website" && text == CALLED_DONE),
+            "{items:?}"
+        );
+        let err = e.call("project_build_finish", json!({"project": d.path().join("nope")}), CallOptions::new(Caller::Cli)).unwrap_err();
+        assert!(err.message.contains("isn't a project folder"), "{err:?}");
+    }
 
     #[test]
     fn list_show_and_answer_a_project_without_the_app() {
