@@ -1,8 +1,9 @@
 # Slop Anything LITE — design spec
 
-Status: scaffold. This document defines the fork. Nothing here is wired into
-the engine yet unless a section says so; each build step lands in its own
-commit, in the order at the bottom of this file.
+Status: alpha. This document defines the fork. The build order at the bottom
+of this file has landed through step 13; step 14 (periodic upstream sync)
+is automated. Provider routes are implemented, not live-verified (see the
+verification policy below).
 
 ## Purpose
 

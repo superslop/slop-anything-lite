@@ -7,7 +7,7 @@
 <p align="center">
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-a855f7?style=flat-square">
-  <img alt="Status: scaffold" src="https://img.shields.io/badge/status-scaffold-ec4899?style=flat-square">
+  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-ec4899?style=flat-square">
 </p>
 
 Slop Anything LITE is a fork of Craft Anything, keeping its core workflow —
@@ -34,11 +34,12 @@ Clean room as the default — with two changes:
 
 ## Status
 
-Scaffold phase. The engine code is upstream code, used as it is: its crates
-are internal workspace crates and keep their `craft-anything-*` names (see
-the decision in `docs/slop/SPEC.md`), and the provider and superslop
-features in the spec are planned work, not shipped features. The build
-order is at the bottom of `docs/slop/SPEC.md`.
+Early alpha — the same maturity upstream claims for itself. The engine code
+is upstream code, used as it is: its crates are internal workspace crates
+and keep their `craft-anything-*` names (see the decision in
+`docs/slop/SPEC.md`). The fork's features are implemented; the wider
+provider routes are implemented, not live-verified. The build order is at
+the bottom of `docs/slop/SPEC.md`.
 
 What already works is what upstream had working: the desktop app, the CLI,
 and the MCP server; the Study → Build → Check → Refine workflow for websites
