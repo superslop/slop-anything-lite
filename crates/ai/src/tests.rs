@@ -97,6 +97,17 @@ fn a_coding_agent_test_says_it_only_checked_the_version() {
     assert_eq!(serde_json::to_value(&r).unwrap()["version_only"], true, "the CLI's ai test prints it");
 }
 
+/// Every known agent with an adapter of its own is offered when adding a coding agent.
+#[test]
+fn every_agent_with_its_own_adapter_is_offered() {
+    let adapters = cli_agents::adapters::AgentAdapters::built_in();
+    let own: Vec<&str> = cli_agents::KNOWN.iter().map(|(id, _, _)| *id).filter(|id| adapters.for_agent(id).ids().contains(id)).collect();
+    assert!(own.contains(&"maki"), "{own:?}");
+    for id in own {
+        assert!(BackendKind::AgentCli.suggested_models().contains(&id), "{id} isn't offered");
+    }
+}
+
 /// #37: doctor asks a local server for its models instead of trusting an open port.
 #[test]
 fn a_local_server_is_reachable_only_when_it_lists_models() {
@@ -224,6 +235,29 @@ fn an_ais_model_is_changed() {
     assert!(h.set_model("Box", " ").is_err());
 }
 
+/// Every Claude effort level can be chosen for the Claude API and Claude Code, and only for them.
+#[test]
+fn a_claude_ais_effort_is_changed() {
+    let (h, _d) = hub();
+    let b = |name: &str, kind, model: &str| BackendConfig { name: name.into(), kind, model: model.into(), base_url: None, ssh_host: None, enabled: true };
+    h.add_backend(b("Claude Code", BackendKind::AgentCli, "claude-code"), None).unwrap();
+    h.add_backend(b("Codex", BackendKind::AgentCli, "codex"), None).unwrap();
+    let effort = |h: &AiHub, name: &str| {
+        let config = h.backends().into_iter().find(|b| b.name == name).unwrap();
+        crate::effort_in_use(&config, h.options().get(name))
+    };
+    assert_eq!(effort(&h, "Claude Code"), Some(Effort::High), "high until it's chosen");
+    for level in Effort::ALL {
+        assert!(h.set_effort("Claude Code", Some(level)).unwrap());
+        assert_eq!(effort(&h, "Claude Code"), Some(level));
+    }
+    assert!(h.set_effort("Claude Code", None).unwrap());
+    assert_eq!(effort(&h, "Claude Code"), Some(Effort::High), "back to the usual level");
+    assert_eq!(effort(&h, "Codex"), None, "an agent that doesn't take Claude's levels");
+    assert!(h.set_effort("Codex", Some(Effort::Max)).is_err());
+    assert!(!h.set_effort("Nobody", Some(Effort::Low)).unwrap());
+}
+
 /// #54, #98: a server on another computer is added by its address, with a model that can chat
 /// when none is named; one that doesn't answer with its models isn't added.
 #[test]
@@ -239,6 +273,33 @@ fn a_server_is_added_by_its_address() {
     assert!(h.add_server("No scheme", "192.168.1.20:11434/v1", None, None).is_err());
     assert!(h.add_server(" ", &url, None, None).is_err());
     assert_eq!(h.backends().len(), 2, "only the ones that answered");
+}
+
+/// #374: a remote OpenAI-compatible service was treated as a local model: a 24K-token context
+/// and a cost of nothing. Only a server on this computer or its network is local.
+#[test]
+fn only_an_openai_compatible_server_nearby_is_local() {
+    let (h, _d) = hub();
+    for (name, base, local) in [
+        ("Ollama", "http://127.0.0.1:11434/v1", true),
+        ("LM Studio box", "http://192.168.1.20:1234/v1", true),
+        ("Docker Ollama", "http://ollama:11434/v1", true),
+        ("IPv6 link-local", "http://[fe80::1]:11434/v1", true),
+        ("Z.ai", "https://api.z.ai/api/coding/paas/v4", false),
+        ("Public vLLM", "http://8.8.8.8:8000/v1", false),
+    ] {
+        add(&h, name, BackendKind::OpenaiCompatible, base, None);
+        let slot = h.build_model(&h.entry(name).unwrap()).unwrap();
+        assert_eq!(slot.local, local, "{name} at {base}");
+    }
+    h.add_backend(
+        BackendConfig { name: "Default".into(), kind: BackendKind::OpenaiCompatible, model: String::new(), base_url: None, ssh_host: None, enabled: true },
+        None,
+    )
+    .unwrap();
+    assert!(h.build_model(&h.entry("Default").unwrap()).unwrap().local, "no address means Ollama on this computer");
+    add(&h, "OpenAI", BackendKind::Openai, "http://127.0.0.1:9/v1", Some("sk-test"));
+    assert!(!h.build_model(&h.entry("OpenAI").unwrap()).unwrap().local, "only OpenAI-compatible servers can be local");
 }
 
 fn add(h: &AiHub, name: &str, kind: BackendKind, base: &str, key: Option<&str>) {

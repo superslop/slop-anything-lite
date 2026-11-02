@@ -34,7 +34,7 @@ pub fn full_profile() -> bool {
 #[derive(Debug, Parser)]
 #[command(name = "slop-anything-cli", version, about = "Slop Anything LITE on the command line: every tool, the MCP server, setup and doctor.")]
 #[command(after_help = "Every tool is also a subcommand: `slop-anything-cli commands` lists them, `slop-anything-cli <tool> --help` shows its options.\n\
-When a tool has its own --format option (core-target-open, report, ...), --format after the tool name goes to the tool; pick the output with --output-format (or --format before the tool name).")]
+When a tool has its own --format option (core-target-open, ...), --format after the tool name goes to the tool; pick the output with --output-format (or --format before the tool name). `report` has no format option of its own: use `report --html` for HTML.")]
 pub struct Cli {
     /// Output format. `--output-format` always means this, even after a tool that has its own `--format`.
     #[arg(long, global = true, value_enum, default_value_t = Format::Json, alias = "output-format")]

@@ -204,6 +204,7 @@ Capture menus, dialogs and tabs	擷取選單、對話方塊和分頁
 Change	變更
 Change a setting	變更設定
 Change an AI's model	變更 AI 的模型
+Change how hard an AI thinks	變更 AI 的思考力度
 Change it	變更
 Change…	變更…
 Check	檢查
@@ -249,6 +250,7 @@ Code reconstructed from a program that looks like the C language. Close to what 
 Code signature	程式碼簽章
 Coding agent app	程式設計代理應用程式
 Command palette (Ctrl/⌘ K)	命令面板 (Ctrl/⌘ K)
+Commands:	指令：
 Compare WebAssembly interfaces	比較 WebAssembly 介面
 Compare module exports	比較模組匯出
 Compare two .NET builds	比較兩個 .NET 建置
@@ -364,6 +366,7 @@ Duplicate the project	建立專案副本
 Each answer says how sure we are: Seen it, Worked it out or Best guess.	每個回答都會說明可信程度：已觀察、已推導或推測。
 Edit a project file	編輯專案檔案
 Edit them in place	直接編輯
+Effort:	思考力度：
 Electron and JavaScript	Electron 與 JavaScript
 Electron fuses	Electron 功能開關
 Engines	引擎
@@ -977,12 +980,14 @@ Set up a builder	設定建置助手
 Settings	設定
 Show a build's activity	顯示建置活動
 Show a project	顯示專案
+Show folder	顯示資料夾
 Show me everything	顯示全部內容
 Show me the proof	檢視證據
 Show pinned builds	顯示釘選的建置
 Show settings	顯示設定
 Show the answer	顯示回答
 Show the console	顯示主控台
+Show the folder	顯示該資料夾
 Show the ones that are met	顯示已滿足的要求
 Show the sidebar	顯示側邊欄
 Show the welcome again	再次顯示歡迎畫面

@@ -206,7 +206,15 @@ pub struct CsScan {
 #[derive(Debug, Clone)]
 enum Scope {
     Namespace(String),
-    Type { full: String, simple: String, is_enum: bool },
+    /// `positional` holds a record's positional properties, added when the body closes unless the body
+    /// declares a member of the same name; `start` is the member count when the body opened.
+    Type {
+        full: String,
+        simple: String,
+        is_enum: bool,
+        positional: Vec<CsMember>,
+        start: usize,
+    },
     Block,
 }
 
@@ -234,7 +242,7 @@ const MODIFIERS: &[&str] = &[
     "implicit",
     "explicit",
 ];
-const TYPE_KW: &[&str] = &["class", "struct", "interface", "enum", "record"];
+const TYPE_KW: &[&str] = &["class", "struct", "interface", "enum", "record", "delegate"];
 
 fn ident(t: &T) -> Option<&str> {
     match &t.tok {
@@ -351,6 +359,33 @@ fn param_type(p: &[T]) -> String {
     if byref { format!("ref {s}") } else { s }
 }
 
+/// Properties a positional record declares through its parameter list `params`.
+fn positional_properties(kind: &str, params: &[T], type_name: &str, line: u32) -> Vec<CsMember> {
+    if !kind.starts_with("record") {
+        return Vec::new();
+    }
+    split_commas(params)
+        .into_iter()
+        .filter_map(|p| {
+            let (p, _) = strip_prefix(p);
+            let p = p.get(..p.iter().position(|t| is_p(t, '=')).unwrap_or(p.len())).unwrap_or(&[]);
+            let name = p.last().and_then(ident)?;
+            if p.len() < 2 {
+                return None;
+            }
+            Some(CsMember {
+                kind: "property",
+                type_name: type_name.to_string(),
+                name: name.to_string(),
+                generic_arity: 0,
+                params: vec![],
+                ty: param_type(p),
+                line,
+            })
+        })
+        .collect()
+}
+
 struct Scanner {
     scopes: Vec<Scope>,
     file_ns: String,
@@ -375,16 +410,68 @@ impl Scanner {
 
     fn current_type(&self) -> Option<(&str, &str, bool)> {
         match self.scopes.last()? {
-            Scope::Type { full, simple, is_enum } => Some((full, simple, *is_enum)),
+            Scope::Type { full, simple, is_enum, .. } => Some((full, simple, *is_enum)),
             _ => None,
         }
     }
 
+    /// Parse a type declaration header into its name, kind, generic arity, and line number.
     fn type_decl(&self, h: &[T]) -> Option<(String, String, usize, u32)> {
         let paren = h.iter().position(|t| is_p(t, '(')).unwrap_or(h.len());
         let kw = h.iter().take(paren).position(|t| ident(t).is_some_and(|w| TYPE_KW.contains(&w)))?;
+        // A declaration keyword cannot follow an assignment or arrow operator.
+        if h.iter().take(kw).any(|t| is_p(t, '=') || t.tok == Tok::Arrow) {
+            return None;
+        }
+        let kind = ident(h.get(kw)?)?;
+        if kind == "delegate" {
+            if h.get(kw + 1).is_some_and(|t| is_p(t, '*')) {
+                return None;
+            }
+            let is_reserved = |w: &str| w == "delegate" || w == "ref" || w == "void" || MODIFIERS.contains(&w) || TYPE_KW.contains(&w);
+            let mut target = None;
+            for p in (kw + 1)..h.len() {
+                if !is_p(&h[p], '(') {
+                    continue;
+                }
+                if p > kw + 1 && is_p(&h[p - 1], '>') {
+                    let mut depth = 0i32;
+                    let mut open_lt = None;
+                    for i in (kw + 1..p).rev() {
+                        let t = &h[i];
+                        if is_p(t, '>') {
+                            depth += 1;
+                        } else if is_p(t, '<') {
+                            depth -= 1;
+                            if depth == 0 {
+                                open_lt = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(lt) = open_lt
+                        && lt > kw + 1
+                        && let Some(name_tok) = h.get(lt - 1)
+                        && let Some(name) = ident(name_tok)
+                        && !is_reserved(name)
+                    {
+                        let arity = split_commas(h.get(lt + 1..p - 1).unwrap_or(&[])).len();
+                        target = Some((name.to_string(), arity, name_tok.line));
+                        break;
+                    }
+                } else if let Some(name_tok) = h.get(p - 1)
+                    && let Some(name) = ident(name_tok)
+                    && !is_reserved(name)
+                {
+                    target = Some((name.to_string(), 0, name_tok.line));
+                    break;
+                }
+            }
+            let (name, arity, line) = target?;
+            return Some((name, "delegate".into(), arity, line));
+        }
         let mut k = kw + 1;
-        let mut kind = ident(h.get(kw)?)?.to_string();
+        let mut kind = kind.to_string();
         if kind == "record" && h.get(k).and_then(ident).is_some_and(|w| w == "struct" || w == "class") {
             kind = format!("record {}", ident(h.get(k)?)?);
             k += 1;
@@ -541,6 +628,7 @@ impl Scanner {
         }
     }
 
+    /// Scan token stream into types, members, and namespace scopes.
     fn run(mut self, toks: &[T]) -> CsScan {
         let mut cur: Vec<T> = Vec::new();
         let mut expr_depth = 0i32;
@@ -604,9 +692,13 @@ impl Scanner {
                             self.out.types.push(CsType { full_name: full.clone(), kind: kind.clone(), generic_arity: arity, line });
                         }
                         // Positional records declare a constructor and properties.
-                        if let Some(p) = h.iter().position(|x| is_p(x, '(')) {
+                        let mut positional = Vec::new();
+                        if kind != "delegate"
+                            && let Some(p) = h.iter().position(|x| is_p(x, '('))
+                        {
                             let close = matching(&h, p, '(', ')').unwrap_or(h.len());
-                            let params: Vec<String> = split_commas(h.get(p + 1..close).unwrap_or(&[])).into_iter().map(param_type).collect();
+                            let list = h.get(p + 1..close).unwrap_or(&[]);
+                            let params: Vec<String> = split_commas(list).into_iter().map(param_type).collect();
                             self.push(CsMember {
                                 kind: "constructor",
                                 type_name: full.clone(),
@@ -616,8 +708,10 @@ impl Scanner {
                                 ty: "void".into(),
                                 line,
                             });
+                            positional = positional_properties(&kind, list, &full, line);
                         }
-                        self.scopes.push(Scope::Type { full, simple: name, is_enum: kind == "enum" });
+                        let start = self.out.members.len();
+                        self.scopes.push(Scope::Type { full, simple: name, is_enum: kind == "enum", positional, start });
                     } else if self.current_type().is_some() {
                         self.member(&h, true);
                         self.scopes.push(Scope::Block);
@@ -632,7 +726,15 @@ impl Scanner {
                     }
                     cur.clear();
                     expr_depth = 0;
-                    self.scopes.pop();
+                    if let Some(Scope::Type { full, positional, start, .. }) = self.scopes.pop() {
+                        // A member of the same name replaces the synthesized property.
+                        for m in positional {
+                            let declared = self.out.members.get(start..).unwrap_or(&[]).iter().any(|d| d.type_name == full && d.name == m.name);
+                            if !declared {
+                                self.push(m);
+                            }
+                        }
+                    }
                 }
                 Tok::Punct(';') => {
                     let h = std::mem::take(&mut cur);
@@ -644,9 +746,12 @@ impl Scanner {
                     } else if let Some((name, kind, arity, line)) = self.type_decl(&h) {
                         let prefix = self.prefix();
                         let full = if prefix.is_empty() { name } else { format!("{prefix}.{name}") };
-                        if let Some(p) = h.iter().position(|x| is_p(x, '(')) {
+                        if kind != "delegate"
+                            && let Some(p) = h.iter().position(|x| is_p(x, '('))
+                        {
                             let close = matching(&h, p, '(', ')').unwrap_or(h.len());
-                            let params: Vec<String> = split_commas(h.get(p + 1..close).unwrap_or(&[])).into_iter().map(param_type).collect();
+                            let list = h.get(p + 1..close).unwrap_or(&[]);
+                            let params: Vec<String> = split_commas(list).into_iter().map(param_type).collect();
                             self.push(CsMember {
                                 kind: "constructor",
                                 type_name: full.clone(),
@@ -656,6 +761,9 @@ impl Scanner {
                                 ty: "void".into(),
                                 line,
                             });
+                            for m in positional_properties(&kind, list, &full, line) {
+                                self.push(m);
+                            }
                         }
                         if self.out.types.len() < 200_000 {
                             self.out.types.push(CsType { full_name: full, kind, generic_arity: arity, line });
@@ -787,6 +895,23 @@ fn compiler_generated(name: &str) -> bool {
     name.contains('<') || name.contains('$') || name.starts_with("CS$")
 }
 
+/// An accessor (`get_P`, `add_E`…) of a property or event in `props`. Explicit interface
+/// implementations keep the qualifier in front: `Iface.get_P` belongs to `Iface.P`.
+fn is_accessor(name: &str, props: &BTreeSet<&str>) -> bool {
+    let (qualifier, local) = match name.rsplit_once('.') {
+        Some((q, l)) => (Some(q), l),
+        None => (None, name),
+    };
+    if !["get_", "set_", "add_", "remove_", "raise_"].iter().any(|p| local.starts_with(p)) {
+        return false;
+    }
+    let Some((_, prop)) = local.split_once('_') else { return false };
+    match qualifier {
+        Some(q) => props.contains(format!("{q}.{prop}").as_str()),
+        None => props.contains(prop),
+    }
+}
+
 /// Check scanned declarations against metadata members.
 pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
     let mut r = Reconciliation::default();
@@ -834,8 +959,7 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
             } else if compiler_generated(name)
                 || name == ".cctor"
                 || (name == ".ctor" && params.is_empty())
-                || (["get_", "set_", "add_", "remove_", "raise_"].iter().any(|p| name.starts_with(p))
-                    && name.split_once('_').is_some_and(|(_, n)| props.contains(n)))
+                || is_accessor(name, &props)
                 || (ty.kind == "delegate" && ["Invoke", "BeginInvoke", "EndInvoke", ".ctor"].contains(&name))
                 || (ty.kind == "enum" && name == "value__")
             {
@@ -883,6 +1007,7 @@ pub fn reconcile(members: &Members, scan: &CsScan) -> Reconciliation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dotnet::model::{MethodInfo, PropertyInfo, TypeInfo};
 
     #[test]
     fn scans_declarations() {
@@ -939,6 +1064,115 @@ public sealed class Box<T> : IDisposable where T : class
         assert_eq!(norm_type_name("Ns.Outer/Inner`1"), ("Ns.Outer.Inner".into(), 1));
     }
 
+    fn method(name: &str) -> MethodInfo {
+        MethodInfo {
+            token: String::new(),
+            name: name.into(),
+            key: String::new(),
+            signature: name.into(),
+            return_type: String::new(),
+            params: vec![],
+            generic_params: vec![],
+            visibility: "private",
+            modifiers: vec![],
+            code_type: "il",
+            internal_call: false,
+            pinvoke: false,
+            rva: 0,
+            body: None,
+        }
+    }
+
+    fn ty(name: &str, kind: &'static str, methods: &[&str], props: &[&str]) -> TypeInfo {
+        TypeInfo {
+            token: String::new(),
+            full_name: name.into(),
+            namespace: String::new(),
+            name: name.into(),
+            kind,
+            visibility: "internal",
+            modifiers: vec![],
+            extends: None,
+            enclosing_type: None,
+            generic_params: vec![],
+            interfaces: vec![],
+            fields: vec![],
+            methods: methods.iter().map(|m| method(m)).collect(),
+            properties: props.iter().map(|p| PropertyInfo { name: (*p).into(), ty: "int".into() }).collect(),
+            events: vec![],
+        }
+    }
+
+    #[test]
+    fn explicit_interface_property_accessors_are_implicit() {
+        let members = Members {
+            types: vec![
+                ty("Interface", "interface", &["get_Property", "set_Property"], &["Property"]),
+                ty("Class", "class", &["Interface.get_Property", "Interface.set_Property", ".ctor", "Other.get_X"], &["Interface.Property"]),
+            ],
+            total_types: 2,
+            total_methods: 6,
+            total_fields: 0,
+            truncated: false,
+            warnings: vec![],
+        };
+        let s = scan("interface Interface { int Property { get; set; } } class Class : Interface { int Interface.Property { get; set; } }");
+        let r = reconcile(&members, &s);
+        let missing: Vec<&str> = r.missing.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(missing, vec!["Other.get_X"]);
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        assert_eq!(r.matched.iter().filter(|m| m.kind == "property").count(), 2);
+        let implicit: Vec<&str> = r.implicit.iter().map(|m| m.name.as_str()).collect();
+        assert!(implicit.contains(&"Interface.get_Property"), "{implicit:?}");
+        assert!(implicit.contains(&"Interface.set_Property"), "{implicit:?}");
+    }
+
+    #[test]
+    fn scans_and_reconciles_delegate_declarations() {
+        let s = scan(
+            r#"
+namespace Newtonsoft.Json.Serialization;
+
+public delegate void ExtensionDataSetter(object o, string key, object value);
+public delegate TResult Func<out TResult>();
+public delegate (int, int) Pair();
+public delegate (string Name, int Age) GetUser<T>(T id);
+
+public class Container {
+    public delegate bool Filter(int item);
+    public Action callback = delegate { };
+    public Action<int> onCount = delegate(int x) { };
+    public unsafe delegate*<int, void> fp;
+}
+"#,
+        );
+        let types: Vec<(&str, &str, usize)> = s.types.iter().map(|t| (t.full_name.as_str(), t.kind.as_str(), t.generic_arity)).collect();
+        assert!(types.contains(&("Newtonsoft.Json.Serialization.ExtensionDataSetter", "delegate", 0)), "{types:?}");
+        assert!(types.contains(&("Newtonsoft.Json.Serialization.Func", "delegate", 1)), "{types:?}");
+        assert!(types.contains(&("Newtonsoft.Json.Serialization.Pair", "delegate", 0)), "{types:?}");
+        assert!(types.contains(&("Newtonsoft.Json.Serialization.GetUser", "delegate", 1)), "{types:?}");
+        assert!(types.contains(&("Newtonsoft.Json.Serialization.Container.Filter", "delegate", 0)), "{types:?}");
+        assert!(!types.iter().any(|(name, _, _)| name.ends_with(".delegate")), "anonymous delegates must not register as types: {types:?}");
+
+        let fields: Vec<(&str, &str)> = s.members.iter().filter(|m| m.kind == "field").map(|m| (m.name.as_str(), m.ty.as_str())).collect();
+        assert!(fields.contains(&("callback", "Action")), "{fields:?}");
+        assert!(fields.contains(&("onCount", "Action<int>")), "{fields:?}");
+        assert!(fields.iter().any(|(name, _)| *name == "fp"), "{fields:?}");
+
+        let members = Members {
+            types: vec![ty("Newtonsoft.Json.Serialization.ExtensionDataSetter", "delegate", &[".ctor", "Invoke", "BeginInvoke", "EndInvoke"], &[])],
+            total_types: 1,
+            total_methods: 4,
+            total_fields: 0,
+            truncated: false,
+            warnings: vec![],
+        };
+        let r = reconcile(&members, &s);
+        assert_eq!(r.matched_types, 1);
+        assert!(r.missing_types.is_empty(), "delegate is not missing: {:?}", r.missing_types);
+        assert!(r.missing.is_empty(), "synthetic delegate methods are not missing: {:?}", r.missing);
+    }
+
     #[test]
     fn junk_does_not_panic() {
         for src in ["", "{{{{", "}}}}", "class", "class X {", "\"unterminated", "'", "/*", "@\"", "$\"\"\"", "namespace ;", "class X { void (", "enum E { , }"]
@@ -952,5 +1186,77 @@ public sealed class Box<T> : IDisposable where T : class
             weird.push(char::from_u32(i * 7 % 0x2fff).unwrap_or('x'));
         }
         let _ = scan(&weird);
+    }
+
+    #[test]
+    fn positional_record_declares_properties() {
+        use crate::dotnet::model::PropertyInfo;
+        use crate::dotnet::{MethodInfo, Param, TypeInfo};
+        let method = |name: &str, params: &[&str], ty: &str| MethodInfo {
+            token: String::new(),
+            name: name.into(),
+            key: String::new(),
+            signature: name.into(),
+            return_type: ty.into(),
+            params: params.iter().map(|p| Param { name: String::new(), ty: (*p).into() }).collect(),
+            generic_params: vec![],
+            visibility: "public",
+            modifiers: vec![],
+            code_type: "il",
+            internal_call: false,
+            pinvoke: false,
+            rva: 0,
+            body: None,
+        };
+        let members = Members {
+            types: vec![TypeInfo {
+                token: "0x02000002".into(),
+                full_name: "N.Point".into(),
+                namespace: "N".into(),
+                name: "Point".into(),
+                kind: "class",
+                visibility: "public",
+                modifiers: vec![],
+                extends: Some("object".into()),
+                enclosing_type: None,
+                generic_params: vec![],
+                interfaces: vec![],
+                fields: vec![],
+                methods: vec![
+                    method(".ctor", &["int", "int"], "void"),
+                    method("get_X", &[], "int"),
+                    method("set_X", &["int"], "void"),
+                    method("get_Y", &[], "int"),
+                    method("set_Y", &["int"], "void"),
+                ],
+                properties: vec![PropertyInfo { name: "X".into(), ty: "int".into() }, PropertyInfo { name: "Y".into(), ty: "int".into() }],
+                events: vec![],
+            }],
+            total_types: 1,
+            total_methods: 5,
+            total_fields: 0,
+            truncated: false,
+            warnings: vec![],
+        };
+        for src in [
+            "namespace N { public record Point(int X, int Y); }",
+            "namespace N { public record Point(int X, int Y) { } }",
+            "namespace N { public record Point(int X, int Y) { public int X { get; init; } = X; } }",
+            "namespace N { public record Point(int X, [property: Obsolete] int Y) { public int X { get; init; } = X; public int Y { get; init; } = Y; } }",
+        ] {
+            let s = scan(src);
+            let props: Vec<(&str, &str, &str)> =
+                s.members.iter().filter(|m| m.kind == "property").map(|m| (m.type_name.as_str(), m.name.as_str(), m.ty.as_str())).collect();
+            assert_eq!(props.len(), 2, "{src}: {props:?}");
+            assert!(props.contains(&("N.Point", "X", "int")), "{src}: {props:?}");
+            assert!(props.contains(&("N.Point", "Y", "int")), "{src}: {props:?}");
+            let r = reconcile(&members, &s);
+            assert!(r.missing.is_empty(), "{src}: {:?}", r.missing);
+            assert!(r.extra.is_empty(), "{src}: {:?}", r.extra);
+            assert_eq!(r.matched.len(), 3, "{src}");
+        }
+        // A class with a primary constructor does not get properties.
+        let s = scan("namespace N { public class C(int x) { } }");
+        assert!(s.members.iter().all(|m| m.kind != "property"));
     }
 }

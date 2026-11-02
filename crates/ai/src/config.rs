@@ -30,7 +30,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BackendOptions {
-    /// Thinking depth for investigations (`low`/`medium`/`high`); quick explanations use `low`.
+    /// Thinking depth (`low`/`medium`/`high`/`xhigh`/`max`) for the Claude API and Claude Code;
+    /// `high` unless set. A model without the level gets the nearest one below it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
     /// Anthropic server-side fallbacks (default on).
@@ -306,5 +307,7 @@ mod tests {
         assert_eq!(one("model = \"x/y\"\ncommand = \"opencode\"\ncli_model = \"z\""), ("opencode".into(), Some("z".into())));
         assert_eq!(one("model = \"my-agent\"\ncommand = \"my-agent-cli\""), ("my-agent".into(), None));
         assert_eq!(one("model = \"claude-code\""), ("claude-code".into(), None));
+        // Maki named by its program runs Maki's own adapter, not `maki <prompt>` (its terminal interface).
+        assert_eq!(one("model = \"anthropic/claude-sonnet-4-6\"\ncommand = \"maki\""), ("maki".into(), Some("anthropic/claude-sonnet-4-6".into())));
     }
 }

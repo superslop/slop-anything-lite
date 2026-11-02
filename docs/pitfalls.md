@@ -71,6 +71,10 @@ before running anything, and run new tests on a machine without the program.
 It happened again when Clean room began refusing tools before their program is looked for: a
 "missing adb" test returned early on a machine with adb and failed in CI without it. A test of
 what happens without a program builds its session in the mode the tool runs in.
+It happened a third time with Ghidra: the test session's engine store was empty, but the lookup
+still searched PATH, `~/.local/bin` and `/opt/ghidra`, so two Deep-mode tests got Ghidra's answer
+on a machine that had it. `testing::session()` now sets `engines.only_configured`, so it finds only
+the engines its settings or store name.
 
 **A failing crate hid the next crate's tests.** `cargo test -p a -p b` stopped after a failure in
 `a`, so `b`'s tests never ran; the rerun was filtered to the failing test, and a broken engine id
@@ -119,6 +123,11 @@ browser outlived the CLI (the job isn't killed when closed) and held the shell's
 the command hung and old browsers piled up. Start programs that hand off with `.hands_off()`, and
 after a live run check that the command returned and nothing it started is still running.
 
+**A separate config folder hides the agent's own settings.** To keep a live run from touching the
+real `config.toml`, `XDG_CONFIG_HOME` was pointed at a scratch folder; the agent CLI we start reads
+the same variable, lost its own provider settings, and failed with "unsupported provider". Back up
+`config.toml` and restore it after the run instead, and leave the agent's environment as it is.
+
 **A renamed CLI can't start the builder's tools.** To keep a live run's binary from being locked, it
 was copied as `cli-r25.exe`; the CLI finds itself by name (`craft-anything-cli`) to start the
 builder's MCP server, so Claude Code saw no tools and stopped. Copy it under its own name into a
@@ -138,6 +147,11 @@ external tool a live test that checks it really produced output, not just that i
 It happened again with Explorer: project folders are kept as `D:/Projects/…\name`, and "Open
 folder" opened Documents. Paths for the system's programs go through `platform::native_path`.
 
+**A message on the command line.** Claude Code was handed the whole task as `-p <message>`; a
+34,641-character brief passed Windows' 32,767-character command-line limit, so the build never
+started ("The filename or extension is too long", os error 206, #402). Give a program anything
+that can grow (messages, briefs, lists of files) on stdin or in a file, never in argv.
+
 **Console windows popping up over the app.** Only the detached launcher hid the console; the
 supervised runner didn't, so Ghidra's `.bat` and PowerShell each opened a console window during a
 real Deep-mode run (the CLI never shows it: it already has a console). Every child started from
@@ -148,6 +162,9 @@ program.
 adapter, but eframe starts every backend first, and starting GL loaded an old Intel OpenGL driver
 that crashed the app before any window or error box (#196). Ranking can't protect you from a
 backend that's started at all: start only the backends the app may use.
+It happened again with Vulkan on Windows (#394): starting Vulkan loaded an Intel Vulkan driver
+(`igvk64.dll`) that crashed with `0xc0000005` on startup. Windows now starts DX12 only by default
+(which includes WARP); `WGPU_BACKEND` still allows choosing other backends.
 
 **A Mac app that couldn't find Claude Code, and offered a GitHub key instead.** An app opened from
 the Dock gets the system's short `PATH`, not the shell's, so `claude` in `~/.local/bin` wasn't
@@ -370,6 +387,21 @@ whose folder didn't exist and took one file per call; the extractor model hit th
 wrote its own pak reader in Python for a large archive. Tools an AI drives make what they
 can (folders), take whole sets in one call, and every brief says to fix the call rather than
 replace the tool. Read an AI run's transcript for tools it gave up on.
+
+**Two engines, two address spaces.** Ghidra loads a position-independent ELF (lowest segment at
+0) at 0x100000, while the built-in engine reads it where its headers say. Handing Ghidra our
+address found nothing there, and Deep mode quietly fell back to the built-in decompiler for every
+PIE program and shared library. Whenever an address crosses between engines, move it by their
+image bases (`ghidra::Rebase`, from the base the bridge reports) and say in the evidence which
+space each address is in.
+
+**An id that only means something on one computer, kept in a folder that travels.** The project
+saved Claude Code's session id, but the session itself lives in `~/.claude/projects/` on the
+computer (and under the folder) that started it; a project synced to another computer stopped at
+"No conversation found" (#452), and the retry for a cut-off turn asked for the same missing session
+three more times. Anything a project keeps must still work where the folder goes: keep what the id
+points to as well (`agent-session.jsonl`), tell "not here" apart from a failure by a typed signal
+(`Conversation::session_lost`), and never retry what can't succeed.
 
 ## Agent tooling
 

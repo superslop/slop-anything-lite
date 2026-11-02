@@ -433,6 +433,27 @@ fn the_prompt_box_sends_on_enter_with_its_pictures() {
 }
 
 #[test]
+fn tab_completes_a_slash_command_and_keeps_focus() {
+    use craft_anything_ai::rebuild::StandIns;
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    let d = tempfile::tempdir().unwrap();
+    let a = Workspace::create(d.path(), "Alpha", "A notes app", TargetRef::None).unwrap();
+    let (dir, runs) = (d.path().to_path_buf(), StandIns::new());
+    let mut h = harness(move || stand_in_app(dir, &runs));
+    h.run_steps(2);
+    h.state_mut().open_workspace(a);
+    h.run_steps(2);
+    h.get_by_label("Ask for a change").focus();
+    h.run_steps(2);
+    h.get_by_label("Ask for a change").type_text("/b");
+    h.run_steps(2);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    assert_eq!(h.state().state.project_input, "/btw ");
+    assert!(h.get_by_label("Ask for a change").is_focused(), "the box keeps focus");
+}
+
+#[test]
 fn pictures_of_the_original_go_with_the_draft_then_into_the_project() {
     use craft_anything_engine::workspace::{TargetRef, Workspace};
     let d = tempfile::tempdir().unwrap();
@@ -1022,6 +1043,39 @@ fn an_agent_apps_program_is_set_in_settings() {
     h.get_by_label("Program: /opt/oc/opencode");
     h.get_by_label("Find it automatically").click();
     assert!(wait(&mut h, |a| program(a).is_none()));
+}
+
+/// Claude Code's effort is chosen in Settings → AI, from every level Claude offers.
+#[test]
+fn a_claude_ais_effort_is_set_in_settings() {
+    use craft_anything_ai::{BackendConfig, BackendKind, Effort};
+    let mut h = harness(|| {
+        let a = demo::app(demo::engine(Mode::Experienced, true));
+        let cfg = BackendConfig {
+            name: "Claude Code".into(),
+            kind: BackendKind::AgentCli,
+            model: "claude-code".into(),
+            base_url: None,
+            ssh_host: None,
+            enabled: true,
+        };
+        a.hub.add_backend(cfg, None).unwrap();
+        a
+    });
+    h.state_mut().refresh_backends();
+    assert!(wait(&mut h, |a| a.backends.iter().any(|b| b.name == "Claude Code")));
+    h.state_mut().state.settings_open = true;
+    h.state_mut().state.settings_tab = craft_anything_ui_egui::state::SettingsTab::Ai;
+    h.run_steps(2);
+    h.get_by_label("Effort:");
+    assert!(h.state().backend_options.get("Claude Code").and_then(|o| o.effort).is_none(), "the usual level until one is chosen");
+    // Chosen through the dropdown itself, which shows the level in use.
+    h.get_by_value("high").click();
+    h.run();
+    h.get_by_label("max").click();
+    assert!(wait(&mut h, |a| a.backend_options.get("Claude Code").and_then(|o| o.effort) == Some(Effort::Max)));
+    h.run_steps(2);
+    h.get_by_value("max");
 }
 
 #[test]

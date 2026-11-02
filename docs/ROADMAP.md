@@ -141,6 +141,10 @@ No `deny.toml` exists. The survey found no GPL, AGPL or SSPL crates, and only MP
 
 ### R0.5 Small correctness items from the survey
 Owner: open · Status: done (branch chore/r0.5-cleanups)
+- [x] Disclosed partially read SQLite cell payloads, preserved column positions, and withheld hashes of incomplete BLOBs.
+- [x] Filled missing trailing SQLite record fields from literal column defaults and disclosed unsupported defaults as NULL.
+- [x] Restored rowid aliases in SQLite INTEGER primary-key columns while preserving stored values and non-alias keys.
+- [x] Read and counted WITHOUT ROWID table records from leaf and interior index pages, restored declaration column order, and reported absent rowids as null.
 - [x] Decode Objective-C chained pointer offsets past file-empty PAGEZERO mappings (#296).
 - [x] Recognise root-relative macOS bundles and nested XPC services in Apple app graphs (#282).
 - [x] Checked arithmetic on file offsets in `elf.rs`: `va_to_off` adds a segment's file offset to an
@@ -159,17 +163,22 @@ Owner: open · Status: done (branch chore/r0.5-cleanups)
 - [x] `yaxpeax-arm` 0.5.0 panicked ("register number out of range") on an A32 `STRD`/`LDRD` with
       Rt = 15 (e.g. the word `0xc0c7fef3`), so one such word failed the whole analysis of a 32-bit
       ARM program; the word now decodes as invalid
+- [x] ARM32 value-flow graphs use r0 for word results and ARM scratch registers for calls (#239).
 - [x] Unchecked `o + 4`/`o + 8` on section and program header offsets in `formats/src/dart.rs`
       (`Elf::parse`): a header table near `usize::MAX` panicked in debug builds (in release the
       wrapped reads were thrown away, since the entry's first field was already out of range); an
       entry that starts past the end of the file is now skipped
 - [x] `cargo xtask layers` also scans `apps/`
+- [x] WebAssembly interface comparisons resolve exported tag parameter types (#309).
 - [x] Engines in `KNOWN` without a `ToolPaths` override (tshark, objdump, rizin, java)
+- [x] Class-usage search includes the component class of multidimensional object arrays (#325).
 - [x] Missing `database` icon for SQLite in the UI (`kind_icon`)
 - [x] Deduplicate the five private `fn spec(` helpers in the tool modules
+- [x] Keep dependencies between recognised esbuild wrappers after identifier minification (#270).
 - [x] rustfmt drift on main (11 files)
 - [x] Checked arithmetic on file offsets in `fsread/extfs.rs`: an inode offset near `usize::MAX`
       overflows `o + 128` (two sites), found by a lint scan of `crates/formats` (#42)
+- [x] Read extended SquashFS directory offsets correctly (#338). — claimed: Afloat16, branch bugfix/r0.5-squashfs-extended-directory-20261102
 - [x] `macho.rs` `method_list`: `list + 8 + i * entsize` adds to a pointer read from the file, so a
       segment that ends at `u64::MAX` overflowed it (found by a lint scan; now reproduced by a
       regression test, and the entry addresses are checked)
@@ -178,6 +187,8 @@ Owner: open · Status: done (branch chore/r0.5-cleanups)
       from `DT_HASH` or `DT_GNU_HASH` (moved out of `dart.rs`), `Binary` symbols, imports and exports are
       filled from it, `elf::dynamic_symbols` reads versions through `DT_VERSYM`/`DT_VERDEF`/`DT_VERNEED`,
       and the prologue scan walks executable segments (#223)
+- [x] Cut external-tool stderr at a character boundary, so a 64 KiB (objdump, rizin) or 16 KiB (rtl_433) cap
+      inside a multibyte character no longer drops the whole stderr (#287).
 
 ### R0.8 Tests never touch the real machine
 Owner: open · Status: done, except protecting `main` (a maintainer setting)
@@ -488,6 +499,7 @@ Owner: open · Status: done (branch `feature/r1.9-versioned-files`)
 
 ### R2.1 Building with API-key backends
 Owner: maintainers · Status: in progress (built; live runs need keys)
+- [x] Include successful context-summary calls in message usage, build cost and the model-turn journal (#272).
 - [x] File and command tools for our own agent (`Build` toolset): `build_files_list`,
       `build_file_read`, `build_file_write`, `build_file_edit`, `build_command_run`, in the session's
       workspace, through `platform::process` and the same approval policy as Claude Code builds
@@ -512,11 +524,27 @@ Owner: maintainers · Status: in progress (built; live runs need keys)
       24k for local models, `LoopConfig::context_tokens`) old tool results are trimmed, then the
       oldest part is replaced by a summary the model writes; the conversation is kept in
       `transcript.json` after every step and a follow-up resumes it
+- [x] Only an OpenAI-compatible server on this computer or its network counts as local (24k
+      context, no cost); a remote one gets the cloud budget and its price (#374)
+- [ ] A per-backend context budget in `[[ai.backends]]` (`LoopConfig::context_tokens` exists), for
+      services whose real window differs from 150k (#374)
+- [x] A project moved to another computer (or folder) keeps building with Claude Code: when the saved
+      `agent_session` isn't there (`Conversation::session_lost`), a fresh session starts from the brief,
+      the builder's last summary and what's in `app/` instead of failing; questions about the build put
+      the kept session back first, else are answered from the files and forget the missing one (#452)
+- [x] The coding agent's conversation travels with the project folder (#451): after every turn the
+      project keeps a copy of Claude Code's session (`agent-session.jsonl`, `AgentAdapter::session_file`);
+      on a computer without it, the copy is put back where Claude Code finds it (`restore_session`) so
+      the same session carries on, and if that fails the new session is handed the kept requests and
+      replies (`handoff`, up to 16k characters)
+- [ ] A live run of a project copied between two real computers with Claude Code (#451, #452); done on
+      one Mac with a second `CLAUDE_CONFIG_DIR` standing in for the other computer (STATUS.md)
+- [ ] Session copies for other agents that keep sessions (ACP agents' `session/load`) (#451)
 
 ### R2.2 More coding agents
 Owner: open · Status: in progress
 - [x] `AcpConversation`: chat with agents that speak ACP (`cli_agents::acp`; agents and their ACP
-      arguments in `ACP_AGENTS`: Gemini CLI, Qwen Code, opencode, goose, Hermes). Opt-in per backend
+      arguments in `ACP_AGENTS`: Gemini CLI, Qwen Code, opencode, goose, Hermes, Maki). Opt-in per backend
       (`acp = true` in its options); one agent process per chat, permission requests become
       consent questions, sessions continue with `session/load`
 - [x] Builder runs over ACP: with `acp = true`, rebuild runs use `AcpConversation`; the agent's
@@ -532,6 +560,27 @@ Owner: open · Status: in progress
 - [ ] Say on each adapter, as typed data, what it can be held to (asks us, its own sandbox, nothing),
       and have runs act on that, once the decision above is made
 - [ ] Check live what Hermes over ACP asks about: whether its file reads reach our approval policy
+- [x] Maki as a coding agent: one message per `maki -p`, and over ACP (`maki acp -m <cli_model>`);
+      run live as an ACP builder (a page to Ready, a follow-up continued with `session/load`, its
+      requests refused unattended with Auto mode off)
+- [ ] Over ACP, a continued session shows the earlier conversation again: `session/load` replays it
+      as `session/update`s, which we show as new; drop updates until the load answers
+- [ ] Over ACP, turns report 0 tokens: the protocol sends only `usage_update` (context used and
+      size). Read real counts where an agent keeps them (Maki: `token_usage` in its session file
+      under `~/.local/state/maki/sessions/`) or say the count is unknown instead of 0
+- [ ] Maki's plain `maki -p` builder doesn't ask us before commands, and in Clean room its reads
+      aren't checked (as with every agent that never asks us): say so in the approval decision
+      above, or run Maki over ACP by default once that passes. Outside a build, tools the person
+      allowed in Maki's own permissions (an MCP server's, or all of them with `always_yolo`) still
+      run; the adapter can't see that config
+- [ ] Maki over ACP writes inside its working folder without a permission request (its built-in
+      rule), and that folder is a build's project folder, so writes to our own records (inbox,
+      manifest) skip the approval policy; `maki acp` takes no tool flags to stop it (0.7.0). Start
+      it in `app/` (paths in the prompt relative to that), or ask Maki for a way to make those
+      writes ask; part of the approval decision above
+- [ ] Codex, Gemini CLI, OpenCode, Hermes, Maki and the plain adapter still take the message in
+      argv, so a long one can pass Windows' command-line limit as Claude Code's did (#402); hand
+      each its message on stdin or in a file where its CLI reads one
 
 ### R2.3 Website coverage and a better visual metric
 Owner: open · Status: done
@@ -669,6 +718,10 @@ What the person asks for comes first, in every kind; the stack table is only the
 - [ ] Make: a game whose request names a technology the stack table doesn't know (Phaser, Bevy…)
       still needs the default engine installed to start, though the builder is told to use what
       was named; ask the person, or let such a game start without an engine
+- [ ] Build check: a page asked for in plain HTML and CSS has nothing to build, but the check
+      only knows Cargo.toml, package.json and engine projects ("No project to build found in
+      app/"), so a builder added a placeholder package.json (`"build": "node -e \"0\""`) to pass;
+      count a static site (an `index.html` in app/) as built
 - [x] CLI: after the tool name, `--project` is the tool's own option when it has one
       (`rebuild-check --project <folder>`, `project-show --project <folder>`), as `--format` is;
       otherwise, and always before the tool name, it's the global investigation folder
@@ -721,7 +774,7 @@ Gaps found while using the app for real projects.
 - [x] Slash commands in a project's prompt box: `/btw` asks about the build in place of the old
       `?` prefix; a new one is a `slash::Command` and a row in `COMMANDS`. A mistyped command stays
       in the box rather than starting a build; a path like `/usr/bin` is a plain message
-- [ ] Typing `/` lists the commands, and Tab completes one
+- [x] Typing `/` lists the commands, and Tab completes one
 - [x] Questions about a build show in the conversation where they were asked, so a long answer
       scrolls with it and leaves the prompt box alone; each folds to one line, and they're kept in
       the project (`questions.json`, the newest 200, `rebuild_questions_list`), in their place
@@ -805,7 +858,7 @@ Gaps found while using the app for real projects.
 - [x] A consent card's id is a short number, with the call it stands for kept in memory, not the
       call serialised into the id
 - [x] The workbench's list isn't copied every frame (it can hold thousands of rows)
-- [ ] Simple-mode text sizes checked by a test (no literal sizes under 12 pt outside the workbench)
+- [x] Simple-mode text sizes checked by a test (no literal sizes under 12 pt outside the workbench)
 - [x] Typed text no longer blinks in the prompt box; Open folder opens the project's folder
 - [x] Scroll bars show at rest (6 px, the text colour at 3:1 or more on every surface), not
       only on hover
@@ -857,17 +910,27 @@ Gaps found while using the app for real projects.
 - [ ] Two engine tests fail on a Mac, on `main` too: `real_binary_end_to_end_if_present` expects
       `/bin/ls` to be Linux, and `auto_mode_keeps_going_but_never_does_the_dangerous_things` is
       refused `rm -rf` in a temp folder under `/var/folders`
+- [x] Every effort level Claude offers: `xhigh` and `max` next to low, medium and high, for the
+      Claude API and Claude Code, a level a model lacks stepping down to the nearest one it has,
+      and a way to choose it in Settings → AI and `ai effort` (only `config.toml` sets it now)
+- [ ] Claude Code's own extras: its Ultracode switch (a setting, not an effort level; the
+      effort environment variable we use can't turn it on) and its model names beyond the list
+      (`opusplan`, `[1m]` variants) offered in Settings → AI; `ai model` already takes any name
+- [ ] `a_helper_is_judged_by_whether_it_runs` (ai crate) sometimes fails when several crates'
+      tests run at once and passes alone: it writes a script and runs it straight away, which a
+      busy machine can refuse while another test's child still holds the file open
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
 Keep a build that works at hand: pin it, and open it from the sidebar whatever the builder does
 to the project next. Pins are the engine's (tools), kept in the project's `pinned/` folder.
+- [x] Keep runtime assets in `obj` folders when pinning or copying a project; only exclude recognised compiler intermediates, and retain the selected direct-launch program in a pin (#274).
 - [x] Pin a build as a frozen copy (the default: the app's files and the program, without what
       a build makes again, in `pinned/<n>/`, with its size shown first) or as a live pin that runs
       the project's app as it is; open, stop, rename and remove pins; one copy runs per folder
       (pins and Play alike) unless another is asked for; a start that quits at once says so with
       its last output (`project_pin_create`, `project_pins_list`, `project_pin_open`,
-      `project_pin_stop`, `project_pin_rename`, `project_pin_delete`; `pin.json` version 1;
+      `project_pin_stop`, `project_pin_rename`, `project_pin_delete`; `pin.json` version 2 (version 1 still reads);
       `platform::Launched`)
 - [x] A light pin in place of the live one, which only opened what Play opens: the program, the
       code and anything a program may write to are copied, dependencies and media are hard-linked
@@ -891,7 +954,8 @@ to the project next. Pins are the engine's (tools), kept in the project's `pinne
       page with the frozen/light choice and each copy's size; the pin tools are in the command
       palette with every other tool
 - [ ] Opening a pin that's already running brings its window to the front, instead of a message
-- [ ] Show a pin's folder (the right-click menu), and how much space pins take in Settings
+- [ ] How much space pins take in Settings. Showing a pin's folder is done in the right-click menu,
+      through `project_open_folder` with `pin` — claimed: muraa-p, branch bugfix/r2.10-pin-folder
 - [ ] Live check on Windows: rebuild a project while its frozen pin runs, and the build isn't blocked
 
 ## M3 Engine depth
@@ -942,7 +1006,7 @@ Owner: open · Status: done
 ### R3.3 Frida sessions for real
 Owner: open · Status: todo
 - [ ] Replace the in-memory session bookkeeping with real attach, resume and detach
-- [ ] `frida_devices_find` with `remote`: `frida-ls-devices` has no `-H`, so listing a remote's devices fails
+- [x] `frida_devices_find` with `remote`: `frida-ls-devices` has no `-H`, so listing a remote's devices fails - return a single device entry for the remote instead of calling frida-ls-devices
 
 ### R3.4 Decompilers for managed code (external engines)
 Owner: open · Status: in progress
@@ -1047,6 +1111,7 @@ formats anyone can open.
 Owner: open · Status: in progress
 A saved analysis should answer a narrow question without running again, and an app's own code
 should give away more of how it is set up.
+- [x] Preserve every unassigned window when comparing application preferences (#237).
 - [x] `core_evidence_browse` pages keep only the rows that match (`matching`: field → value or list
       of values, `a.b` inside a row, null for a missing field), return only chosen fields (`fields`)
       and list the field names of the matching rows (`field_names`); offsets count matching rows.
@@ -1082,6 +1147,7 @@ should give away more of how it is set up.
 Owner: open · Status: in progress
 Read what real apps and games ship as (one file carrying the rest), and let a rebuilt website run
 against what its original was recorded answering.
+- [x] Identify Bun UTF-16LE text members (#257). — claimed: Afloat16, branch bugfix/r3.11-bun-text-encoding-20261102
 - [x] One seam for files packed inside a file (`formats::packed`), with `core_packed_files_list`
       and `core_packed_files_unpack`; a new kind is one reader and one table line
 - [x] Readers: Bun and Node.js single-file programs, .NET single-file apps, PyInstaller, Godot PCK.
@@ -1093,6 +1159,8 @@ against what its original was recorded answering.
       of runtimes; checked against about 25 installed Mac apps
 - [x] A stand-in backend from a network recording (`web_standin_build`, `_start`, `_stop`, `_show`),
       GraphQL and tRPC operations in app maps, and `web_walkthrough_check`
+- [x] `js_app_map` keeps a literal GraphQL document that begins with a comment, as it already
+      does without one (#260)
 - [x] `app_builds_line_up` (two real builds of a 276 MB program in 42 s),
       `native_source_folder_write` (resumable), `android_components_list`
 - [x] CLI: `--json -` takes parameters from a pipe; `--format csv` and `tsv` write a result's rows,

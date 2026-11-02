@@ -100,7 +100,25 @@ pub(crate) struct Walked {
     pub links: Vec<String>,
     pub ignored: usize,
     pub truncated: bool,
-    pub errors: Vec<String>,
+    /// Folders below the root that couldn't be listed, as (relative path, reason) (#294).
+    pub unlisted: Vec<(String, String)>,
+}
+
+/// A limitation naming the folders that couldn't be listed, as (path, reason), if any (#294).
+pub(crate) fn unlisted_limitation(unlisted: &[(String, String)]) -> Option<Limitation> {
+    if unlisted.is_empty() {
+        return None;
+    }
+    let first = unlisted.iter().take(5).map(|(rel, e)| format!("{rel} ({e})")).collect::<Vec<_>>().join(", ");
+    let more = unlisted.len().saturating_sub(5);
+    Some(Limitation::new(
+        "unlisted_folders",
+        format!(
+            "{} folder(s) couldn't be listed, so what they hold is missing: {first}{}",
+            unlisted.len(),
+            if more > 0 { format!(" and {more} more") } else { String::new() }
+        ),
+    ))
 }
 
 pub(crate) struct WalkOptions<'a> {
@@ -114,6 +132,7 @@ pub(crate) struct WalkOptions<'a> {
 }
 
 /// Walk a folder without following symbolic links. Bounded by file count and depth.
+/// A root that can't be listed is an error; a folder below it that can't be is in `unlisted`.
 pub(crate) fn walk_dir(root: &Path, opts: &WalkOptions<'_>, cancel: &CancelToken) -> Result<Walked, ToolError> {
     let mut out = Walked::default();
     let mut ignore = craft_anything_analysis::js_source::Ignore::default();
@@ -128,10 +147,9 @@ pub(crate) fn walk_dir(root: &Path, opts: &WalkOptions<'_>, cancel: &CancelToken
         }
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
+            Err(e) if rel.is_empty() => return Err(ToolError::io(dir.display(), e)),
             Err(e) => {
-                if out.errors.len() < 100 {
-                    out.errors.push(format!("{}: {e}", dir.display()));
-                }
+                out.unlisted.push((rel, e.to_string()));
                 continue;
             }
         };
@@ -391,6 +409,12 @@ fn default_max_total() -> u64 {
 
 /// Build an inventory of a path (file or folder).
 pub(crate) fn inventory_path(path: &Path, limits: InvLimits, cancel: &CancelToken) -> Result<(Inventory, Subject), ToolError> {
+    inventory_path_unlisted(path, limits, cancel).map(|(inv, subject, _)| (inv, subject))
+}
+
+/// [`inventory_path`], also returning the folders that couldn't be listed, as (path, reason).
+#[allow(clippy::type_complexity)]
+fn inventory_path_unlisted(path: &Path, limits: InvLimits, cancel: &CancelToken) -> Result<(Inventory, Subject, Vec<(String, String)>), ToolError> {
     let meta = std::fs::metadata(path).map_err(|e| ToolError::io(path.display(), e))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
     let check = || cancel.is_cancelled();
@@ -400,7 +424,8 @@ pub(crate) fn inventory_path(path: &Path, limits: InvLimits, cancel: &CancelToke
             walk_dir(path, &WalkOptions { max_files: limits.max_entries, max_depth: 64, skip_dir: &skip, gitignore: false, include_hidden: true }, cancel)?;
         let mut inv = Inventorier::new(&name, "directory", limits, &check);
         for d in &walked.dirs {
-            inv.add_marker(d, "directory", 0, None);
+            let failed = walked.unlisted.iter().find(|(rel, _)| rel == d);
+            inv.add_marker(d, "directory", 0, failed.map(|(_, e)| format!("couldn't be listed: {e}")));
         }
         for l in &walked.links {
             inv.add_marker(l, "link", 0, Some("symbolic link (not followed)".into()));
@@ -424,11 +449,13 @@ pub(crate) fn inventory_path(path: &Path, limits: InvLimits, cancel: &CancelToke
         let mut out = inv.finish();
         out.truncated |= walked.truncated;
         let id = out.content_id();
-        return Ok((out, Subject { kind: "directory".into(), sha256: Some(id.trim_start_matches("inv_").to_string()), name: Some(name) }));
+        let subject = Subject { kind: "directory".into(), sha256: Some(id.trim_start_matches("inv_").to_string()), name: Some(name) };
+        return Ok((out, subject, walked.unlisted));
     }
     let bytes = read_capped(path, limits.max_total_bytes.min(crate::target::MAX_TARGET_BYTES))?;
     let kind = craft_anything_analysis::js_inventory::sniff_kind(&bytes, &name);
     let mut inv = Inventorier::new(&name, kind, limits, &check);
+    let mut unlisted = Vec::new();
     match kind {
         "zip" | "apk" | "ipa" | "jar" | "hap" | "msix" | "asar" => {
             inv.add_archive("", &bytes, kind, 0).map_err(|_| ToolError::cancelled())?;
@@ -442,6 +469,7 @@ pub(crate) fn inventory_path(path: &Path, limits: InvLimits, cancel: &CancelToke
                         &WalkOptions { max_files: limits.max_entries, max_depth: 64, skip_dir: &skip, gitignore: false, include_hidden: true },
                         cancel,
                     )?;
+                    unlisted.extend(walked.unlisted.into_iter().map(|(rel, e)| (format!("{name}.unpacked/{rel}"), e)));
                     for f in walked.files.iter().take(limits.max_entries) {
                         if let Ok(b) = std::fs::read(&f.abs) {
                             inv.add_file(&format!("{name}.unpacked/{}", f.rel), &b, 0).map_err(|_| ToolError::cancelled())?;
@@ -452,7 +480,7 @@ pub(crate) fn inventory_path(path: &Path, limits: InvLimits, cancel: &CancelToke
         }
         _ => inv.add_file(&name, &bytes, 0).map_err(|_| ToolError::cancelled())?,
     }
-    Ok((inv.finish(), Subject { kind: kind.into(), sha256: Some(sha256_hex(&bytes)), name: Some(name) }))
+    Ok((inv.finish(), Subject { kind: kind.into(), sha256: Some(sha256_hex(&bytes)), name: Some(name) }, unlisted))
 }
 
 fn target_path(ctx: &Ctx<'_>, p: Option<&str>) -> Result<PathBuf, ToolError> {
@@ -471,13 +499,47 @@ fn integrity_error(inv: &Inventory) -> ToolError {
     .with_details(json!({"contradictions": inv.contradictions.iter().take(50).collect::<Vec<_>>()}))
 }
 
+fn show_limits(max_depth: u32, max_entries: usize, max_total_bytes: u64) -> InvLimits {
+    InvLimits { max_entries: max_entries.clamp(1, 1_000_000), max_depth: max_depth.min(6), max_total_bytes, ..InvLimits::default() }
+}
+
+/// Re-read the path a core_archive_show record names and check it is unchanged, then return its inventory at `limits`.
+/// The check uses the scope the record was made with, since a folder's id covers only the entries that scope lists.
+pub(crate) fn recorded_inventory(ev: &Evidence, limits: InvLimits, cancel: &CancelToken) -> Result<(Inventory, Subject), ToolError> {
+    let path = ev.params.get("path").and_then(Value::as_str).ok_or_else(|| ToolError::invalid("inventory evidence has no path"))?;
+    let num = |k: &str| ev.params.get(k).and_then(Value::as_u64);
+    let recorded = show_limits(
+        num("max_depth").map_or(default_depth(), |v| u32::try_from(v).unwrap_or(u32::MAX)),
+        num("max_entries").map_or(default_max_entries(), |v| usize::try_from(v).unwrap_or(usize::MAX)),
+        num("max_total_bytes").unwrap_or_else(default_max_total),
+    );
+    // A file's id is the hash of its bytes, whatever the scope; a folder's depends on the scope.
+    let check = if ev.subject.kind == "directory" { recorded } else { limits };
+    let (inv, subject) = inventory_path(Path::new(path), check, cancel)?;
+    if subject.sha256 != ev.subject.sha256 {
+        return Err(ToolError::new(ErrorCode::FileChanged, format!("{path} changed since evidence {} was recorded", ev.id))
+            .with_remediation("Run core_archive_show again, or pass the path directly."));
+    }
+    if same_limits(&check, &limits) {
+        return Ok((inv, subject));
+    }
+    inventory_path(Path::new(path), limits, cancel)
+}
+
+fn same_limits(a: &InvLimits, b: &InvLimits) -> bool {
+    a.max_entries == b.max_entries
+        && a.max_depth == b.max_depth
+        && a.max_nested_bytes == b.max_nested_bytes
+        && a.max_entry_bytes == b.max_entry_bytes
+        && a.max_total_bytes == b.max_total_bytes
+}
+
 fn core_archive_show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: InspectArtifactParams = parse_params(params)?;
     let path = target_path(ctx, p.path.as_deref())?;
-    let limits =
-        InvLimits { max_entries: p.max_entries.clamp(1, 1_000_000), max_depth: p.max_depth.min(6), max_total_bytes: p.max_total_bytes, ..InvLimits::default() };
+    let limits = show_limits(p.max_depth, p.max_entries, p.max_total_bytes);
     ctx.report(None, format!("Inventorying {}", path.display()));
-    let (inv, subject) = inventory_path(&path, limits, &ctx.cancel)?;
+    let (inv, subject, unlisted) = inventory_path_unlisted(&path, limits, &ctx.cancel)?;
     let blocking = inv.contradictions.iter().any(|c| c.get("reason").and_then(Value::as_str).is_some_and(|r| r.contains("integrity") || r.contains("CRC")));
     if blocking && p.if_tampered == IntegrityPolicy::Fail {
         return Err(integrity_error(&inv));
@@ -503,9 +565,14 @@ fn core_archive_show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
             "A size, count or depth limit stopped the inventory early; raise max_entries, max_total_bytes or max_depth to see more.",
         ));
     }
+    lims.extend(unlisted_limitation(&unlisted));
     lims.push(Limitation::new("no_disk_images", "Disk images (DMG), installers (PKG/MSI) and compressed tarballs are listed as single files, not opened."));
+    let mut coverage = Coverage::page(page.len() as u64, total as u64, p.offset as u64);
+    if !unlisted.is_empty() {
+        coverage.status = craft_anything_evidence::CoverageStatus::Partial;
+    }
     let ev = EvidenceBuilder::new("core_archive_show", subject, env(ctx))
-        .params(json!({"path": path, "if_tampered": p.if_tampered == IntegrityPolicy::Fail, "offset": p.offset, "limit": limit, "max_depth": limits.max_depth}))
+        .params(json!({"path": path, "if_tampered": p.if_tampered == IntegrityPolicy::Fail, "offset": p.offset, "limit": limit, "max_depth": limits.max_depth, "max_entries": limits.max_entries, "max_total_bytes": limits.max_total_bytes}))
         .result(json!({
             "path": path,
             "root": inv.root, "root_kind": inv.root_kind, "content_id": inv.content_id(),
@@ -517,7 +584,7 @@ fn core_archive_show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
         .confidence(Confidence::Observed)
         .authority(Authority::OriginalFiles)
         .limitations(lims)
-        .coverage(Coverage::page(page.len() as u64, total as u64, p.offset as u64))
+        .coverage(coverage)
         .location(Location::new("path", path.display().to_string()))
         .build()?;
     Ok(ToolOutput::evidence(ev))
@@ -705,12 +772,7 @@ fn inventory_input(ctx: &Ctx<'_>, v: &Value) -> Result<(Inventory, Option<String
     }
     let ev = resolve_evidence_input(ctx, v, &["core_archive_show"])?;
     // Evidence holds one page; re-read the recorded path for the full inventory and check it is unchanged.
-    let path = ev.params.get("path").and_then(Value::as_str).ok_or_else(|| ToolError::invalid("inventory evidence has no path"))?;
-    let (inv, subject) = inventory_path(Path::new(path), InvLimits::default(), &ctx.cancel)?;
-    if subject.sha256 != ev.subject.sha256 {
-        return Err(ToolError::new(ErrorCode::FileChanged, format!("{path} changed since evidence {} was recorded", ev.id))
-            .with_remediation("Run core_archive_show again, or pass the path directly."));
-    }
+    let (inv, _) = recorded_inventory(&ev, InvLimits::default(), &ctx.cancel)?;
     Ok((inv, Some(ev.id)))
 }
 
@@ -804,6 +866,55 @@ mod tests {
     }
 
     #[test]
+    fn folder_evidence_scope_is_not_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let l3 = fx::zip_stored(&[("leaf.txt", b"leaf")]);
+        let l2 = fx::zip_stored(&[("l3.zip", &l3)]);
+        let l1 = fx::zip_stored(&[("l2.zip", &l2)]);
+        std::fs::write(app.join("l1.zip"), &l1).unwrap();
+        std::fs::write(app.join("other.txt"), b"other").unwrap();
+        let e = Engine::new(crate::testing::session());
+        let tools = ["core_archives_compare", "android_app_graph_build", "apple_app_graph_build", "harmony_app_graph_build"];
+        let consume = |tool: &str, input: Value| {
+            let p = if tool == "core_archives_compare" { json!({"left": input, "right": app}) } else { json!({"inventory": input}) };
+            call(&e, tool, p)
+        };
+        let scopes = [json!({"max_depth": 2}), json!({"max_depth": 3}), json!({"max_entries": 2}), json!({"max_total_bytes": 10})];
+        let mut recorded = Vec::new();
+        for scope in scopes {
+            let mut p = scope.clone();
+            p["path"] = json!(app);
+            let inv = call(&e, "core_archive_show", p).unwrap();
+            let id = inv["id"].as_str().unwrap().to_string();
+            for tool in tools {
+                for input in [json!({"kind": "saved", "evidence_id": id}), inv.clone()] {
+                    let out = consume(tool, input).unwrap_or_else(|err| panic!("{scope} {tool}: {err:?}"));
+                    assert!(out["links"].as_array().unwrap().contains(&json!(id)), "{scope} {tool}");
+                    if tool == "core_archives_compare" {
+                        for k in ["added", "removed", "changed", "moved"] {
+                            assert_eq!(out["result"]["counts"][k], 0, "{scope} {k}");
+                        }
+                    }
+                }
+            }
+            recorded.push((id, inv));
+        }
+        // Real changes are still refused (both files change, so each recorded scope covers one).
+        std::fs::write(app.join("l1.zip"), fx::zip_stored(&[("l2.zip", b"changed")])).unwrap();
+        std::fs::write(app.join("other.txt"), b"changed").unwrap();
+        for (id, inv) in recorded {
+            for tool in tools {
+                for input in [json!({"kind": "saved", "evidence_id": id}), inv.clone()] {
+                    let err = consume(tool, input).unwrap_err();
+                    assert_eq!(err.code, ErrorCode::FileChanged, "{tool}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn if_tampered() {
         let dir = tempfile::tempdir().unwrap();
         let mut z = fx::zip_stored(&[("a.txt", b"hello")]);
@@ -827,5 +938,35 @@ mod tests {
         assert!(safe_components("C:\\x").is_err());
         assert_eq!(safe_components("./a//b").unwrap(), vec!["a", "b"]);
         assert!(safe_components("").is_err());
+    }
+
+    /// #294: a folder that couldn't be listed looked like an ordinary empty folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_cant_be_listed_is_marked_and_leaves_coverage_partial() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle");
+        let closed = bundle.join("closed");
+        std::fs::create_dir_all(&closed).unwrap();
+        std::fs::write(closed.join("hidden.js"), "console.log('hidden');\n").unwrap();
+        std::fs::write(bundle.join("visible.js"), "console.log('visible');\n").unwrap();
+        let e = Engine::new(crate::testing::session());
+        let readable = call(&e, "core_archive_show", json!({"path": bundle})).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&closed).is_ok() {
+            std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return; // Run as root: nothing is unreadable.
+        }
+        let child = call(&e, "core_archive_show", json!({"path": bundle}));
+        let root = call(&e, "core_archive_show", json!({"path": closed}));
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let v = child.unwrap();
+        assert_eq!(v["coverage"]["status"], "partial", "{v}");
+        assert!(v["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "unlisted_folders"), "{v}");
+        let entry = v["result"]["entries"].as_array().unwrap().iter().find(|x| x["path"] == "closed").cloned().unwrap();
+        assert!(entry["note"].as_str().is_some_and(|n| n.contains("couldn't be listed")), "{v}");
+        assert!(root.is_err(), "a root folder that can't be listed is an error, not an empty inventory");
+        assert_eq!(call(&e, "core_archive_show", json!({"path": bundle})).unwrap()["result"], readable["result"]);
     }
 }

@@ -68,7 +68,7 @@ impl BackendKind {
             BackendKind::Openai => &[openai::OPENAI_DEFAULT_MODEL],
             BackendKind::Openrouter => openai::OPENROUTER_MODELS,
             BackendKind::OpenaiCompatible => &[],
-            BackendKind::AgentCli => &["claude-code", "codex", "gemini-cli", "qwen-code", "opencode", "goose", "antigravity", "hermes", "generic-cli"],
+            BackendKind::AgentCli => &["claude-code", "codex", "gemini-cli", "qwen-code", "opencode", "goose", "antigravity", "hermes", "maki", "generic-cli"],
         }
     }
 
@@ -97,6 +97,17 @@ pub struct BackendConfig {
 
 fn yes() -> bool {
     true
+}
+
+/// The effort an AI thinks at, when it can be chosen (Settings → AI): the Claude API and Claude
+/// Code, which take every level in [`Effort::ALL`]. `None` for the others, which don't use it.
+pub fn effort_in_use(config: &BackendConfig, options: Option<&BackendOptions>) -> Option<Effort> {
+    let claude = match config.kind {
+        BackendKind::Anthropic => true,
+        BackendKind::AgentCli => config.model == "claude-code",
+        _ => false,
+    };
+    claude.then(|| prompt::choose_effort(options.and_then(|o| o.effort)))
 }
 
 /// The model an AI uses, when it can be chosen (Settings → AI, #123): an API's own, or the one
@@ -206,6 +217,12 @@ pub trait Conversation: Send {
     /// A saved session to continue later, for agents that have one (agent CLIs).
     fn session_id(&self) -> Option<String> {
         None
+    }
+    /// The saved session the last message was to continue isn't on this computer (the project
+    /// was started on another one, or in another folder): that message did nothing, and the next
+    /// one starts a new session, which knows nothing of the old.
+    fn session_lost(&self) -> bool {
+        false
     }
     /// Drain new events (non-blocking).
     fn poll(&mut self) -> Vec<AgentEvent>;
@@ -452,6 +469,19 @@ impl AiHub {
         Ok(true)
     }
 
+    /// How hard a backend thinks (`None`: the usual level again). Only the Claude API and Claude
+    /// Code take one ([`effort_in_use`]). Returns false when there was no such backend.
+    pub fn set_effort(&self, name: &str, effort: Option<Effort>) -> Result<bool, ToolError> {
+        let mut cfg = self.config_to_change()?;
+        let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
+        if effort.is_some() && effort_in_use(&b.config, Some(&b.options)).is_none() {
+            return Err(ToolError::invalid(format!("{name} doesn't take an effort level.")).with_remediation("Effort is for the Claude API and Claude Code."));
+        }
+        b.options.effort = effort;
+        self.save_config(&cfg)?;
+        Ok(true)
+    }
+
     /// The models a backend can be set to (#123): the API's own list, or Claude's models for Claude
     /// Code. Empty for an agent app that picks its own. Blocking (bounded); run it off the UI thread.
     pub fn model_choices(&self, name: &str) -> Result<Vec<String>, ToolError> {
@@ -535,6 +565,10 @@ impl AiHub {
             _ => None,
         };
         let base = tunneled_base.as_deref().or(base);
+        // A server on this computer or its network (Ollama, LM Studio, one reached over ssh) costs
+        // nothing and gets the small context budget; a remote OpenAI-compatible service has a
+        // large context and a bill, as any other cloud API (#374).
+        let local = c.kind == BackendKind::OpenaiCompatible && base.is_none_or(detect::on_this_network);
         let model: Box<dyn ChatModel> = match c.kind {
             BackendKind::Anthropic => {
                 let mut a = anthropic::Anthropic::new(base, self.key_for(e)?, &c.model);
@@ -554,13 +588,7 @@ impl AiHub {
             Some(t) => Box::new(Tunneled { inner: model, _tunnel: t }) as Box<dyn ChatModel>,
             None => model,
         };
-        Ok(ModelSlot {
-            name: c.name.clone(),
-            model,
-            local: c.kind == BackendKind::OpenaiCompatible,
-            effort: e.options.effort,
-            max_turns: e.options.max_turns.unwrap_or(agent::DEFAULT_MAX_TURNS),
-        })
+        Ok(ModelSlot { name: c.name.clone(), model, local, effort: e.options.effort, max_turns: e.options.max_turns.unwrap_or(agent::DEFAULT_MAX_TURNS) })
     }
 
     fn project_root(&self) -> Option<PathBuf> {

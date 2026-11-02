@@ -204,6 +204,7 @@ Capture menus, dialogs and tabs	采集菜单、对话框和标签页
 Change	更改
 Change a setting	更改设置
 Change an AI's model	更改 AI 的模型
+Change how hard an AI thinks	更改 AI 的思考力度
 Change it	更改
 Change…	更改…
 Check	检查
@@ -249,6 +250,7 @@ Code reconstructed from a program that looks like the C language. Close to what 
 Code signature	代码签名
 Coding agent app	编程智能体应用
 Command palette (Ctrl/⌘ K)	命令面板 (Ctrl/⌘ K)
+Commands:	命令：
 Compare WebAssembly interfaces	比较 WebAssembly 接口
 Compare module exports	比较模块导出
 Compare two .NET builds	比较两个 .NET 构建
@@ -364,6 +366,7 @@ Duplicate the project	创建项目副本
 Each answer says how sure we are: Seen it, Worked it out or Best guess.	每个回答都会说明可信程度：已观察、已推导或推测。
 Edit a project file	编辑项目文件
 Edit them in place	原位编辑
+Effort:	思考力度：
 Electron and JavaScript	Electron 与 JavaScript
 Electron fuses	Electron 功能开关
 Engines	引擎
@@ -977,12 +980,14 @@ Set up a builder	配置构建助手
 Settings	设置
 Show a build's activity	显示构建活动
 Show a project	显示项目
+Show folder	显示文件夹
 Show me everything	显示全部内容
 Show me the proof	查看证据
 Show pinned builds	显示固定的构建
 Show settings	显示设置
 Show the answer	显示回答
 Show the console	显示控制台
+Show the folder	显示该文件夹
 Show the ones that are met	显示已满足的要求
 Show the sidebar	显示侧栏
 Show the welcome again	再次显示欢迎界面
