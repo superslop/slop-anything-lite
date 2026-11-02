@@ -1,0 +1,113 @@
+# Slop Anything LITE — builder and provider catalogue (scaffold, data only).
+#
+# This file is NOT wired into the engine yet. It is the typed catalogue the
+# provider work will read, kept as data instead of prompt text or string
+# matches, per the design spec in docs/slop/SPEC.md.
+#
+# Rules:
+# - No secrets in this file. `api_key_env` names an environment variable only.
+# - A builder or backend is "verified" only after a live build in this fork.
+#   `upstream_status` records what upstream reported at fork time; it is not
+#   our verification.
+
+version = 1
+
+# ---------------------------------------------------------------------------
+# Tier 1: agent CLI builders (the person's own unmodified program, own sign-in)
+# ---------------------------------------------------------------------------
+
+[[builders]]
+id = "claude-code"
+kind = "agent-cli"
+program = "claude"
+upstream_status = "fully wired; live builder turns run upstream"
+lite_status = "inherited; re-verification pending"
+resume = true
+
+[[builders]]
+id = "codex"
+kind = "agent-cli"
+program = "codex"
+upstream_status = "works through its own flags; unverified on a real install; no resume"
+lite_status = "first verification target"
+resume = false
+
+[[builders]]
+id = "gemini-cli"
+kind = "acp"
+program = "gemini"
+upstream_status = "ACP protocol unit tests only; never run against a real agent"
+lite_status = "planned"
+resume = false
+
+[[builders]]
+id = "qwen-code"
+kind = "acp"
+program = "qwen"
+upstream_status = "ACP protocol unit tests only; never run against a real agent"
+lite_status = "planned"
+resume = false
+
+[[builders]]
+id = "opencode"
+kind = "acp"
+program = "opencode"
+upstream_status = "ACP protocol unit tests only; never run against a real agent"
+lite_status = "planned"
+resume = false
+
+[[builders]]
+id = "goose"
+kind = "acp"
+program = "goose"
+upstream_status = "ACP protocol unit tests only; never run against a real agent"
+lite_status = "planned"
+resume = false
+
+[[builders]]
+id = "generic-cli"
+kind = "generic-cli"
+program = ""
+upstream_status = "other agent programs get plain text in and out"
+lite_status = "planned; lowest-assurance tier, labelled as such in the UI"
+resume = false
+
+# ---------------------------------------------------------------------------
+# Tier 2: API loop backends (this tool's own tool loop, person's own API key)
+# ---------------------------------------------------------------------------
+
+[[backends]]
+id = "anthropic"
+kind = "api"
+api_style = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+upstream_status = "loop built upstream; no live API build run at fork time"
+lite_status = "planned"
+
+[[backends]]
+id = "openai"
+kind = "api"
+api_style = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+upstream_status = "loop built upstream; no live API build run at fork time"
+lite_status = "planned"
+
+[[backends]]
+id = "openrouter"
+kind = "api"
+api_style = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+upstream_status = "loop built upstream; no live API build run at fork time"
+lite_status = "first API verification target; one key, many model families"
+
+[[backends]]
+id = "local-openai-compatible"
+kind = "api"
+api_style = "openai"
+base_url = "http://127.0.0.1:11434/v1"
+api_key_env = ""
+upstream_status = "local backend exists upstream; no live API build run at fork time"
+lite_status = "planned; base_url is a starting point and is user-configurable"
