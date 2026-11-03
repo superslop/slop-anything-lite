@@ -48,6 +48,8 @@ pub enum BackendKind {
     Anthropic,
     Openai,
     Openrouter,
+    /// Google AI Studio (a Gemini API key), through Gemini's OpenAI-compatible endpoint.
+    Gemini,
     /// Ollama, LM Studio, llama.cpp, vLLM… (OpenAI-compatible HTTP).
     OpenaiCompatible,
     /// Claude Code, Codex, Gemini CLI, Hermes Agent, OpenCode… run as a subprocess with our MCP server.
@@ -60,6 +62,7 @@ impl BackendKind {
             BackendKind::Anthropic => "Anthropic (Claude API)",
             BackendKind::Openai => "OpenAI",
             BackendKind::Openrouter => "OpenRouter",
+            BackendKind::Gemini => "Gemini (Google AI Studio)",
             BackendKind::OpenaiCompatible => "Local / OpenAI-compatible server",
             BackendKind::AgentCli => "Agent app (command line)",
         }
@@ -71,13 +74,14 @@ impl BackendKind {
             BackendKind::Anthropic => anthropic::MODELS,
             BackendKind::Openai => &[openai::OPENAI_DEFAULT_MODEL],
             BackendKind::Openrouter => openai::OPENROUTER_MODELS,
+            BackendKind::Gemini => openai::GEMINI_MODELS,
             BackendKind::OpenaiCompatible => &[],
             BackendKind::AgentCli => &["claude-code", "codex", "gemini-cli", "qwen-code", "opencode", "goose", "antigravity", "hermes", "maki", "generic-cli"],
         }
     }
 
     pub fn needs_key(self) -> bool {
-        matches!(self, BackendKind::Anthropic | BackendKind::Openai | BackendKind::Openrouter)
+        matches!(self, BackendKind::Anthropic | BackendKind::Openai | BackendKind::Openrouter | BackendKind::Gemini)
     }
 }
 
@@ -638,6 +642,7 @@ impl AiHub {
             }
             BackendKind::Openai => Box::new(openai::OpenAi::official(base, self.key_for(e)?, &c.model)),
             BackendKind::Openrouter => Box::new(openai::OpenAi::openrouter(base, self.key_for(e)?, &c.model)),
+            BackendKind::Gemini => Box::new(openai::OpenAi::gemini(base, self.key_for(e)?, &c.model)),
             BackendKind::OpenaiCompatible => {
                 let mut o = openai::OpenAi::compatible(&c.name, base.unwrap_or("http://127.0.0.1:11434/v1"), self.keys.get(&c.name), &c.model);
                 o.react = e.options.react_fallback.unwrap_or(false);
@@ -759,6 +764,7 @@ impl AiHub {
             BackendKind::Anthropic => anthropic::Anthropic::new(base, self.key_for(&e)?, &e.config.model).list_models(t),
             BackendKind::Openai => openai::OpenAi::official(base, self.key_for(&e)?, &e.config.model).list_models(t),
             BackendKind::Openrouter => openai::OpenAi::openrouter(base, self.key_for(&e)?, &e.config.model).list_models(t),
+            BackendKind::Gemini => openai::OpenAi::gemini(base, self.key_for(&e)?, &e.config.model).list_models(t),
             BackendKind::OpenaiCompatible => {
                 if e.config.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty()) {
                     return Err(ToolError::unavailable("Listing models on a remote server isn't supported yet.").with_remediation("Type the model name."));
@@ -860,6 +866,7 @@ fn reach(e: &BackendEntry, key: Option<String>) -> Result<u64, String> {
         BackendKind::Anthropic => anthropic::Anthropic::new(base, need(key)?, &e.config.model).list_models(t).map(|_| ()).map_err(|x| x.message),
         BackendKind::Openai => openai::OpenAi::official(base, need(key)?, &e.config.model).list_models(t).map(|_| ()).map_err(|x| x.message),
         BackendKind::Openrouter => openai::OpenAi::openrouter(base, need(key)?, &e.config.model).list_models(t).map(|_| ()).map_err(|x| x.message),
+        BackendKind::Gemini => openai::OpenAi::gemini(base, need(key)?, &e.config.model).list_models(t).map(|_| ()).map_err(|x| x.message),
         BackendKind::OpenaiCompatible | BackendKind::AgentCli if e.config.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty()) => {
             let host = e.config.ssh_host.clone().unwrap_or_default();
             craft_anything_platform::Process::new("ssh")
