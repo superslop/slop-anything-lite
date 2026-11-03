@@ -71,6 +71,11 @@ pub trait AgentAdapter: Send + Sync {
     fn prompt_on_stdin(&self) -> bool {
         false
     }
+    /// What goes in on stdin when [`prompt_on_stdin`](AgentAdapter::prompt_on_stdin) says so:
+    /// the message, with the preamble in front for an agent that takes no separate one.
+    fn stdin_text(&self, _preamble: &str, prompt: &str) -> String {
+        prompt.to_string()
+    }
     /// The process for a local run of `program` (an adapter may clean its environment).
     fn process(&self, program: &str) -> Process {
         Process::new(program)
@@ -401,10 +406,31 @@ impl AgentAdapter for ClaudeCode {
 }
 
 /// Claude Code's own folder: `CLAUDE_CONFIG_DIR` when it's set (the person's choice, which the
-/// agent we start keeps too), else `~/.claude`.
+/// agent we start keeps too), else our own under a Flatpak (see [`flatpak_claude_dir`]), else
+/// `~/.claude`.
 fn claude_config_dir() -> Option<std::path::PathBuf> {
     let set = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
-    set.or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
+    set.or_else(flatpak_claude_dir).or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
+}
+
+/// Whether this app runs in a Flatpak sandbox (it sets `FLATPAK_ID` and makes `/.flatpak-info`).
+pub fn in_flatpak() -> bool {
+    static IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IN.get_or_init(|| std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists())
+}
+
+/// Where Claude Code keeps its conversations when we start it under a Flatpak and the person
+/// hasn't chosen a folder: its own is `~/.claude`, which the sandbox only lets us read, so a
+/// conversation was never saved and `--resume` found nothing (#506). A folder of ours in the
+/// app's data folder is writable, and kept with the app. `None` outside a Flatpak, or when
+/// `CLAUDE_CONFIG_DIR` is set.
+pub fn flatpak_claude_dir() -> Option<std::path::PathBuf> {
+    let chosen = std::env::var_os("CLAUDE_CONFIG_DIR").is_some_and(|v| !v.is_empty());
+    flatpak_claude_dir_in(in_flatpak(), chosen, dirs::data_dir())
+}
+
+pub fn flatpak_claude_dir_in(flatpak: bool, chosen: bool, data: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    (flatpak && !chosen).then_some(data?.join("craft-anything").join("claude"))
 }
 
 /// Claude Code's name for the folder a session ran in: the path with everything but letters and
@@ -507,6 +533,16 @@ impl AgentAdapter for Codex {
         &["codex"]
     }
 
+    /// `codex exec -` reads the message from stdin, so a long one can't pass Windows'
+    /// command-line limit (os error 206, #528).
+    fn prompt_on_stdin(&self) -> bool {
+        true
+    }
+
+    fn stdin_text(&self, preamble: &str, prompt: &str) -> String {
+        format!("{preamble}{prompt}")
+    }
+
     fn check_tool_server(&self, stop: &CancelToken) -> Result<(), ToolError> {
         cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop)
     }
@@ -535,7 +571,8 @@ impl AgentAdapter for Codex {
             v.extend(["-m".into(), m.clone()]);
         }
         v.extend(cx.options.args.iter().cloned());
-        v.push(format!("{}{}", cx.preamble, cx.prompt));
+        // The message itself goes in on stdin (see `stdin_text`).
+        v.push("-".into());
         v
     }
 
