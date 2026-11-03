@@ -8,6 +8,16 @@ use craft_anything_ui_egui::CraftApp;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod start_guard;
+
+/// Set when the last start never opened its window (see [`start_guard`]): the software renderer
+/// (WARP) is asked for, as with `CRAFT_ANYTHING_RENDERER=software`, for this start only.
+#[cfg(windows)]
+static RETRY_IN_SOFTWARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(any(target_os = "linux", test))]
+mod linux_gpu;
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -20,6 +30,15 @@ fn main() -> eframe::Result {
     // desktop.log beside the settings, so a start that shows nothing leaves a trace.
     log_to_file();
     log::info!("starting {} (pid {})", env!("CARGO_PKG_VERSION"), std::process::id());
+    // A driver that crashes natively leaves nothing behind but this mark (#74): the start after it
+    // draws without the graphics card, and the one after that is back to normal.
+    let config = craft_anything_engine::settings::config_dir();
+    if start_guard::last_start_failed(&config) {
+        log::warn!("the last start never opened its window; drawing without the graphics card this time");
+        #[cfg(windows)]
+        RETRY_IN_SOFTWARE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    start_guard::begin(&config);
 
     let settings = Settings::load();
     let mut session = Session::new(settings);
@@ -44,8 +63,15 @@ fn main() -> eframe::Result {
     // the bundle's; no icon at all would bring eframe's own.
     let icon = if cfg!(target_os = "macos") { None } else { eframe::icon_data::from_png_bytes(craft_anything_ui_egui::APP_ICON_PNG).ok() };
     let viewport = viewport.with_icon(Arc::new(icon.unwrap_or_default()));
-    #[cfg_attr(not(windows), expect(unused_mut, reason = "only Windows picks its own graphics adapter"))]
+    #[cfg_attr(not(any(windows, target_os = "linux")), expect(unused_mut, reason = "only Windows and Linux pick their own graphics adapter"))]
     let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    #[cfg(target_os = "linux")]
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        // egui-wgpu's default is the discrete GPU; on a laptop whose integrated GPU drives the
+        // panel, the window took 20 s to open and the whole desktop lagged (#571). Draw on the
+        // GPU that drives the screen; `WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF` still decide.
+        setup.native_adapter_selector = Some(Arc::new(linux_gpu::pick_adapter));
+    }
     #[cfg(windows)]
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
         // Starting GL loads the system's OpenGL driver before any adapter is picked, and some
@@ -63,6 +89,9 @@ fn main() -> eframe::Result {
             log::info!("window open");
             CraftApp::setup_context(&cc.egui_ctx);
             let mut app = CraftApp::new(engine, hub);
+            // The window is built hidden and its first frame is drawn afterwards, where a graphics
+            // driver may still crash: the mark stays until frames have been shown (#74).
+            app.after_first_frames(move || start_guard::opened(&config));
             app.load_prefs(cc.storage);
             if let Some(p) = open {
                 app.open_path(p);
@@ -122,7 +151,7 @@ fn graphics_advice(error: &str) -> &'static str {
 /// (#33). `WGPU_BACKEND` still narrows the choice.
 #[cfg(windows)]
 fn pick_adapter(adapters: &[eframe::wgpu::Adapter], surface: Option<&eframe::wgpu::Surface<'_>>) -> Result<eframe::wgpu::Adapter, String> {
-    let software = wants_software(std::env::var("CRAFT_ANYTHING_RENDERER").ok().as_deref());
+    let software = wants_software(std::env::var("CRAFT_ANYTHING_RENDERER").ok().as_deref()) || RETRY_IN_SOFTWARE.load(std::sync::atomic::Ordering::Relaxed);
     let picked = adapters.iter().filter(|a| surface.is_none_or(|s| a.is_surface_supported(s))).min_by_key(|a| {
         let info = a.get_info();
         // Asked for software: WARP first, and the usual order among the rest.

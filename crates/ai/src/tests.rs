@@ -234,8 +234,8 @@ fn a_failed_save_changes_nothing() {
 fn ai_settings_that_cant_be_read_are_never_saved_over() {
     let (h, d) = hub();
     add(&h, "Claude Code", BackendKind::AgentCli, "http://127.0.0.1:9", None);
-    add(&h, "Kimi K3 (OpenRouter)", BackendKind::Openrouter, "http://127.0.0.1:9", None);
-    h.set_role(Role::Builder, Some("Kimi K3 (OpenRouter)")).unwrap();
+    add(&h, "Kimi K3.1 Pro (OpenRouter)", BackendKind::Openrouter, "http://127.0.0.1:9", None);
+    h.set_role(Role::Builder, Some("Kimi K3.1 Pro (OpenRouter)")).unwrap();
     let file = d.path().join("config.toml");
     let mut bad = h.engine.session().settings.clone();
     let price: toml::Table = toml::from_str(
@@ -262,17 +262,17 @@ input_per_mtok = 1.0
 fn the_person_chooses_who_builds() {
     let (h, _d) = hub();
     add(&h, "Claude Code", BackendKind::AgentCli, "http://127.0.0.1:9", None);
-    add(&h, "Kimi K3 (OpenRouter)", BackendKind::Openrouter, "http://127.0.0.1:9", Some("sk-test"));
+    add(&h, "Kimi K3.1 Pro (OpenRouter)", BackendKind::Openrouter, "http://127.0.0.1:9", Some("sk-test"));
     assert_eq!(h.chosen(Role::Builder), None, "automatic until chosen");
     assert!(h.set_role(Role::Builder, Some("Nobody")).is_err(), "only a configured backend");
-    h.set_role(Role::Builder, Some("Kimi K3 (OpenRouter)")).unwrap();
-    assert_eq!(h.chosen(Role::Builder).as_deref(), Some("Kimi K3 (OpenRouter)"));
+    h.set_role(Role::Builder, Some("Kimi K3.1 Pro (OpenRouter)")).unwrap();
+    assert_eq!(h.chosen(Role::Builder).as_deref(), Some("Kimi K3.1 Pro (OpenRouter)"));
     // The extractor is chosen the same way, and has no default.
     assert_eq!(h.chosen(Role::Extractor), None);
-    h.set_role(Role::Extractor, Some("Kimi K3 (OpenRouter)")).unwrap();
-    assert_eq!(h.chosen(Role::Extractor).as_deref(), Some("Kimi K3 (OpenRouter)"));
+    h.set_role(Role::Extractor, Some("Kimi K3.1 Pro (OpenRouter)")).unwrap();
+    assert_eq!(h.chosen(Role::Extractor).as_deref(), Some("Kimi K3.1 Pro (OpenRouter)"));
     // A removed backend can't stay the builder.
-    h.remove_backend("Kimi K3 (OpenRouter)").unwrap();
+    h.remove_backend("Kimi K3.1 Pro (OpenRouter)").unwrap();
     assert_eq!((h.chosen(Role::Builder), h.chosen(Role::Extractor)), (None, None));
     h.set_role(Role::Builder, Some("Claude Code")).unwrap();
     h.set_role(Role::Builder, None).unwrap();
@@ -936,4 +936,26 @@ fn hub_config_keys_and_test_backend() {
         assert_eq!(e.code, ErrorCode::BadSettings);
     }
     assert!(h.compare("Local", "Local", true).is_err());
+}
+
+/// #369: when OpenRouter has no provider that supports tools for a model (404 once only those are
+/// asked for), the turn goes on with the text protocol instead of failing; the first request
+/// required parameters, the second sends no tools.
+#[test]
+fn openrouter_with_no_provider_for_tools_falls_back_to_the_text_protocol() {
+    use crate::model::{Effort, Msg, Stop, ToolDef, TurnRequest};
+    let tools = [ToolDef { name: "look".into(), description: "Look at a file".into(), schema: json!({"type":"object"}) }];
+    let messages = [Msg::user_text("hi")];
+    let request = TurnRequest { system: "S", messages: &messages, tools: &tools, effort: Effort::Low, max_tokens: 100 };
+    let none = json!({"error": {"code": 404, "message": "No endpoints found that can handle the requested parameters."}}).to_string();
+    let reply = chat_sse(&[json!({"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]})]);
+    let (url, seen) = mock(vec![(404, "application/json", none), (200, "text/event-stream", reply)]);
+    let mut model = openai::OpenAi::openrouter(Some(&url), "k".into(), "moonshotai/kimi-k3");
+    let result = model.turn(&request, &mut |_| {}, &Stop::default()).unwrap();
+    assert_eq!(result.message.text(), "hello");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "one retry");
+    assert_eq!(seen[0].body["provider"], json!({"require_parameters": true}));
+    assert!(seen[0].body.get("tools").is_some());
+    assert!(seen[1].body.get("provider").is_none() && seen[1].body.get("tools").is_none(), "the second asks in text: {}", seen[1].body);
 }
