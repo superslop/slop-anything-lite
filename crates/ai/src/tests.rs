@@ -137,6 +137,85 @@ fn hub() -> (AiHub, tempfile::TempDir) {
     (h, dir)
 }
 
+/// A CLI stand-in checks saved selections and refuses native execution until its MCP server is wired.
+#[cfg(unix)]
+#[test]
+fn opencode_selection_is_validated_saved_and_refused_without_native_mcp() {
+    use std::os::unix::fs::PermissionsExt;
+    let (h, dir) = hub();
+    let program = dir.path().join("agent");
+    let catalogue = dir.path().join("models.json");
+    let seen = dir.path().join("arguments.txt");
+    let quote = |p: &std::path::Path| ssh::shell_quote(&p.display().to_string());
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\napi) cat {};;\nrun) printf '%s\\n' \"$@\" > {}; printf 'done';;\n*) exit 8;;\nesac\n",
+        quote(&catalogue),
+        quote(&seen)
+    );
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let model = json!({"id":"alias","providerID":"test","name":"Test","enabled":true,"type":"chat","variants":[{"id":"high"},{"id":"max"}]});
+    std::fs::write(&catalogue, json!({"data":[model]}).to_string()).unwrap();
+    let cfg = BackendConfig { name: "OpenCode".into(), kind: BackendKind::AgentCli, model: "opencode".into(), base_url: None, ssh_host: None, enabled: true };
+    h.add_backend_with(
+        BackendEntry { config: cfg, options: BackendOptions { command: Some(program.display().to_string()), acp: Some(true), ..Default::default() } },
+        None,
+    )
+    .unwrap();
+    assert_eq!(h.model_choices("OpenCode").unwrap(), ["test/alias"]);
+    assert!(h.set_agent_model("OpenCode", Some("test/alias"), Some(Effort::Max)).unwrap());
+    let saved = AiConfig::from_settings(&Settings::load_from(&dir.path().join("config.toml")));
+    assert_eq!(saved.get("OpenCode").unwrap().options.cli_thinking, Some(Effort::Max));
+    assert_eq!(saved.get("OpenCode").unwrap().config.model, "opencode");
+    let mut conversation = h.start(Some("OpenCode"), false).unwrap();
+    conversation.send("test prompt");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut events = Vec::new();
+    while conversation.is_busy() && Instant::now() < deadline {
+        events.extend(conversation.poll());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    events.extend(conversation.poll());
+    assert!(
+        matches!(events.as_slice(), [AgentEvent::Error { message, .. }, AgentEvent::TurnDone { .. }]
+        if message.contains("cannot yet connect")),
+        "{events:?}"
+    );
+    assert!(!seen.exists(), "an explicit selection must not start a run without its MCP server");
+    assert!(h.set_agent_model("OpenCode", Some("test/alias"), Some(Effort::Xhigh)).is_err());
+    assert_eq!(h.options()["OpenCode"].cli_thinking, Some(Effort::Max), "a failed validation changes nothing");
+    let stale = h.model_context("OpenCode").unwrap();
+    h.set_enabled("OpenCode", false).unwrap();
+    assert!(h.set_agent_selection(&stale, None, None).is_err(), "a late picker cannot overwrite newer settings");
+    std::fs::write(&catalogue, r#"{"data":[]}"#).unwrap();
+    assert!(h.set_model("OpenCode", "test/alias").is_err(), "removed models are not offered as a fallback");
+    h.set_agent_model("OpenCode", None, None).unwrap();
+    assert!(h.options()["OpenCode"].cli_model.is_none());
+    assert!(h.options()["OpenCode"].cli_thinking.is_none());
+}
+
+/// Contention is an error, while an available session retains its actual optional project and remains saveable.
+#[test]
+fn model_context_distinguishes_a_busy_session_from_no_project() {
+    use craft_anything_engine::project::{Project, Purpose};
+    let (h, dir) = hub();
+    let backend =
+        BackendConfig { name: "OpenCode".into(), kind: BackendKind::AgentCli, model: "opencode".into(), base_url: None, ssh_host: None, enabled: true };
+    h.add_backend(backend.clone(), None).unwrap();
+    assert_eq!(h.model_context("OpenCode").unwrap().directory, None);
+    let root = dir.path().join("test.cany");
+    {
+        let mut session = h.engine.session();
+        session.open_project(Project::create(&root, "test", Purpose::Education).unwrap()).unwrap();
+        assert!(h.model_context("OpenCode").is_err(), "lock contention must not capture a missing project");
+    }
+    let context = h.model_context("OpenCode").unwrap();
+    assert_eq!(context.directory.as_ref(), Some(&root));
+    assert_eq!(context.backend.config, backend);
+    assert!(h.set_agent_selection(&context, None, None).unwrap(), "a capture after contention must remain saveable");
+    assert!(h.model_context("missing").is_err());
+}
+
 #[test]
 fn a_failed_save_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -270,6 +349,10 @@ fn a_server_is_added_by_its_address() {
     assert_eq!(h.add_server("Named", &url, Some("llama3"), None).unwrap(), "llama3", "a named model is kept");
     assert!(h.add_server("Web page", &serve("404 Not Found", "nope"), None, None).is_err(), "not a model server");
     assert!(h.add_server("Empty", &serve("200 OK", r#"{"object":"list","data":[]}"#), None, None).is_err(), "no models to use");
+    let embeddings = serve("200 OK", r#"{"object":"list","data":[{"id":"nomic-embed-text"}]}"#);
+    let error = h.add_server("Embeddings", &embeddings, None, None).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert!(error.message.contains("model that can chat"));
     assert!(h.add_server("No scheme", "192.168.1.20:11434/v1", None, None).is_err());
     assert!(h.add_server(" ", &url, None, None).is_err());
     assert_eq!(h.backends().len(), 2, "only the ones that answered");
@@ -595,6 +678,212 @@ fn local_server_without_tools_falls_back_to_react() {
     assert!(seen[1].body.get("tools").is_none());
     let last = seen[2].body["messages"].as_array().unwrap().last().unwrap().clone();
     assert!(last["content"].as_str().unwrap().starts_with("Observation:"));
+}
+
+/// #498: return a field-specific error to the model, then accept its corrected call.
+#[test]
+fn a_model_can_correct_an_array_sent_to_a_string_parameter() {
+    let call = |id: &str, input: Value| {
+        chat_sse(&[json!({"choices":[{
+            "delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{
+                "name":"core_unknown_add","arguments":input.to_string()
+            }}]},"finish_reason":"tool_calls"
+        }]})])
+    };
+    let (url, seen) = mock(vec![
+        (200, "text/event-stream", call("wrong", json!({"question": ["Where is the loop?"]}))),
+        (200, "text/event-stream", call("corrected", json!({"question": "Where is the loop?"}))),
+        (200, "text/event-stream", chat_sse(&[json!({"choices":[{"delta":{"content":"Recorded."},"finish_reason":"stop"}]})])),
+    ]);
+    let (h, _d) = hub();
+    add(&h, "Local", BackendKind::OpenaiCompatible, &url, None);
+    let mut c = h.start(Some("Local"), true).unwrap();
+    let events = run(&mut c, "Record what remains unknown.");
+    let completed: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolFinished { tool, ok, .. } if tool == "core_unknown_add" => Some(*ok),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completed, vec![false, true]);
+    assert_eq!(h.engine.session().unknowns().count(), 1, "only the corrected call creates a record");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    let result = seen[1].body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(result["role"], "tool");
+    assert_eq!(result["tool_call_id"], "wrong");
+    let error: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(error["error"]["code"], "bad_input");
+    assert_eq!(error["error"]["details"]["parameter_path"], "/question");
+    assert!(error["error"]["message"].as_str().unwrap().contains("expected a string"));
+    assert!(error["error"]["remediation"].as_str().unwrap().contains("call the tool again"));
+}
+
+#[test]
+fn json_text_tool_calls_execute_through_both_protocols() {
+    for react in [false, true] {
+        for call in [
+            r#"{"name":"core_session_show","arguments":{}}"#,
+            "```json\n{\"name\":\"core_session_show\",\"arguments\":{}}\n````",
+            "````json\n{\"name\":\"core_session_show\",\"arguments\":{}}\n````",
+        ] {
+            let t1 = chat_sse(&[json!({"choices":[{"delta":{"content":call},"finish_reason":"stop"}]})]);
+            let t2 = chat_sse(&[json!({"choices":[{"delta":{"content":"Nothing open."},"finish_reason":"stop"}]})]);
+            let (url, seen) = mock(vec![(200, "text/event-stream", t1), (200, "text/event-stream", t2)]);
+            let (hub, _dir) = hub();
+            let config = BackendConfig {
+                name: "Local".into(),
+                kind: BackendKind::OpenaiCompatible,
+                model: "scripted".into(),
+                base_url: Some(url),
+                ssh_host: None,
+                enabled: true,
+            };
+            hub.add_backend_with(BackendEntry { config, options: BackendOptions { react_fallback: Some(react), ..Default::default() } }, None).unwrap();
+            let mut conversation = hub.start(Some("Local"), true).unwrap();
+            let events = run(&mut conversation, "status?");
+            assert_eq!(
+                events.iter().filter(|e| matches!(e, AgentEvent::ToolFinished { tool, ok: true, .. } if tool == "core_session_show")).count(),
+                1,
+                "react={react}, call={call}: {events:?}"
+            );
+            assert!(events.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "Nothing open.")), "{events:?}");
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            let messages = seen[1].body["messages"].as_array().unwrap();
+            let result = messages.last().unwrap();
+            if react {
+                assert_eq!(result["role"], "user");
+                assert!(result["content"].as_str().unwrap().starts_with("Observation:"));
+            } else {
+                assert_eq!(result["role"], "tool");
+                assert_eq!(result["tool_call_id"], messages[2]["tool_calls"][0]["id"]);
+                assert_eq!(messages[2]["tool_calls"][0]["function"]["name"], "core_session_show");
+            }
+        }
+    }
+}
+
+#[test]
+fn react_action_errors_still_reach_the_tool_loop() {
+    let replies = ["Action: missing_tool\nAction Input: {}", "Action: core_session_show\nAction Input: {}", "Final Answer: Nothing open."]
+        .map(|text| (200, "text/event-stream", chat_sse(&[json!({"choices":[{"delta":{"content":text},"finish_reason":"stop"}]})])));
+    let (url, seen) = mock(replies.into());
+    let (hub, _dir) = hub();
+    let config = BackendConfig {
+        name: "Local".into(),
+        kind: BackendKind::OpenaiCompatible,
+        model: "scripted".into(),
+        base_url: Some(url),
+        ssh_host: None,
+        enabled: true,
+    };
+    hub.add_backend_with(BackendEntry { config, options: BackendOptions { react_fallback: Some(true), ..Default::default() } }, None).unwrap();
+    let mut conversation = hub.start(Some("Local"), true).unwrap();
+    let events = run(&mut conversation, "status?");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolFinished { tool, ok: false, .. } if tool == "missing_tool")), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolFinished { tool, ok: true, .. } if tool == "core_session_show")), "{events:?}");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    let correction = seen[1].body["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap();
+    assert!(correction.starts_with("Observation (error):") && correction.contains("No tool named missing_tool"), "{correction}");
+}
+
+#[test]
+fn fenced_legacy_react_calls_still_execute() {
+    for call in [
+        "```text\nAction: core_session_show\nAction Input: {}\n```",
+        "```text\nAction: core_session_show\nAction Input: {}\n````",
+        "````text\nAction: core_session_show\nAction Input: {}\n````",
+        "````text\nAction: core_session_show\nAction Input: ```json\n{}\n```\n````",
+    ] {
+        let replies = [call, "Final Answer: Nothing open."]
+            .map(|text| (200, "text/event-stream", chat_sse(&[json!({"choices":[{"delta":{"content":text},"finish_reason":"stop"}]})])));
+        let (url, seen) = mock(replies.into());
+        let (hub, _dir) = hub();
+        let config = BackendConfig {
+            name: "Local".into(),
+            kind: BackendKind::OpenaiCompatible,
+            model: "scripted".into(),
+            base_url: Some(url),
+            ssh_host: None,
+            enabled: true,
+        };
+        hub.add_backend_with(BackendEntry { config, options: BackendOptions { react_fallback: Some(true), ..Default::default() } }, None).unwrap();
+        let mut conversation = hub.start(Some("Local"), true).unwrap();
+        let events = run(&mut conversation, "status?");
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, AgentEvent::ToolFinished { tool, ok: true, .. } if tool == "core_session_show")).count(),
+            1,
+            "the fenced legacy call must execute exactly once: {events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "Final Answer: Nothing open.")), "{events:?}");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let observation = seen[1].body["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap();
+        assert!(observation.starts_with("Observation:"), "{observation}");
+    }
+}
+
+#[test]
+fn json_text_recovery_preserves_non_actions_and_stop_reasons() {
+    use crate::model::{Effort, Msg, Stop, StopReason, ToolDef, TurnRequest};
+    let tools = [ToolDef { name: "look".into(), description: "Look at a file".into(), schema: json!({"type":"object"}) }];
+    let messages = [Msg::user_text("check")];
+    let request = TurnRequest { system: "S", messages: &messages, tools: &tools, effort: Effort::Low, max_tokens: 100 };
+    for react in [false, true] {
+        for (text, finish, expected) in [
+            (r#"{"name":"unknown","arguments":{}}"#, "stop", StopReason::EndTurn),
+            (r#"{"name":"look","arguments":{}}"#, "length", StopReason::MaxTokens),
+            (r#"{"name":"look","arguments":{}}"#, "content_filter", StopReason::Refusal),
+            (r#"{"name":"look","arguments":{}"#, "stop", StopReason::EndTurn),
+            (r#"{"answer":42}"#, "stop", StopReason::EndTurn),
+            (r#"For example: {"name":"look","arguments":{}}"#, "stop", StopReason::EndTurn),
+            ("```text\nAction: look\nAction Input: {}\n```not a close```", "stop", StopReason::EndTurn),
+            ("```json\n{\"name\":\"look\",\"arguments\":{}}```", "stop", StopReason::EndTurn),
+            ("```text\nAction: look\nAction Input: {}```", "stop", StopReason::EndTurn),
+            ("````text\nAction: look\nAction Input: {}\n```", "stop", StopReason::EndTurn),
+            ("```text\nAction: look\nAction Input: {}\n```\nThis is only an example.\n```", "stop", StopReason::EndTurn),
+        ] {
+            let reply = chat_sse(&[json!({"choices":[{"delta":{"content":text},"finish_reason":finish}]})]);
+            let (url, _seen) = mock(vec![(200, "text/event-stream", reply)]);
+            let mut model = openai::OpenAi::compatible("Local", &url, None, "scripted");
+            model.react = react;
+            let result = model.turn(&request, &mut |_| {}, &Stop::default()).unwrap();
+            assert!(result.message.tool_uses().is_empty(), "{result:?}");
+            assert_eq!(result.stop, expected, "{text}");
+        }
+    }
+    let call = r#"{"name":"look","arguments":{}}"#;
+    for (automatic, offered) in [(false, tools.as_slice()), (true, &[])] {
+        let reply = chat_sse(&[json!({"choices":[{"delta":{"content":call},"finish_reason":"stop"}]})]);
+        let (url, _seen) = mock(vec![(200, "text/event-stream", reply)]);
+        let mut model = openai::OpenAi::compatible("Local", &url, None, "scripted");
+        model.auto_react = automatic;
+        let request = TurnRequest { system: "S", messages: &messages, tools: offered, effort: Effort::Low, max_tokens: 100 };
+        assert!(model.turn(&request, &mut |_| {}, &Stop::default()).unwrap().message.tool_uses().is_empty());
+    }
+}
+
+#[test]
+fn native_tool_calls_are_not_duplicated_by_json_text() {
+    use crate::model::{Effort, Msg, Stop, StopReason, ToolDef, TurnRequest};
+    let tools = [ToolDef { name: "look".into(), description: "Look at a file".into(), schema: json!({"type":"object"}) }];
+    let messages = [Msg::user_text("check")];
+    let request = TurnRequest { system: "S", messages: &messages, tools: &tools, effort: Effort::Low, max_tokens: 100 };
+    for react in [false, true] {
+        let reply = chat_sse(&[json!({"choices":[{"delta":{
+            "content":r#"{"name":"look","arguments":{}}"#,
+            "tool_calls":[{"index":0,"id":"native_call","type":"function","function":{"name":"look","arguments":"{}"}}]
+        },"finish_reason":"tool_calls"}]})]);
+        let (url, _seen) = mock(vec![(200, "text/event-stream", reply)]);
+        let mut model = openai::OpenAi::compatible("Local", &url, None, "scripted");
+        model.react = react;
+        let result = model.turn(&request, &mut |_| {}, &Stop::default()).unwrap();
+        assert_eq!(result.message.tool_uses(), vec![("native_call".into(), "look".into(), json!({}))]);
+        assert_eq!(result.stop, StopReason::ToolUse);
+    }
 }
 
 #[test]

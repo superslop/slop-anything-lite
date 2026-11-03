@@ -1226,6 +1226,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha1",
  "sha2",
  "tempfile",
@@ -1319,6 +1320,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1376,6 +1378,7 @@ dependencies = [
 name = "craft-anything-ui-egui"
 version = "0.4.0"
 dependencies = [
+ "arboard",
  "craft-anything-ai",
  "craft-anything-engine",
  "craft-anything-engines",
@@ -5752,6 +5755,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

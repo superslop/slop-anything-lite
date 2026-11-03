@@ -582,25 +582,37 @@ fn ipv6(p: &[u8], d: &mut Decoded) {
     d.protocols.push("ipv6");
     let ip6 = |b: &[u8]| IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(b).unwrap_or([0; 16])));
     let end = (40 + usize::from(plen)).min(p.len());
+    let payload_reader = Reader::new(p.get(..end).unwrap_or(&[]));
     let mut off = 40usize;
     let mut fragment = false;
     for _ in 0..8 {
         match next {
             0 | 43 | 60 => {
-                let (Some(n), Some(l)) = (r.u8(off), r.u8(off + 1)) else { break };
+                let (Some(n), Some(l)) = (payload_reader.u8(off), payload_reader.u8(off + 1)) else { break };
+                let len = (usize::from(l) + 1) * 8;
+                if off.checked_add(len).is_none_or(|next_off| next_off > end) {
+                    break;
+                }
                 next = n;
-                off += (usize::from(l) + 1) * 8;
+                off += len;
             }
             44 => {
-                let (Some(n), Some(fo)) = (r.u8(off), r.u16_be(off + 2)) else { break };
+                if off.checked_add(8).is_none_or(|next_off| next_off > end) {
+                    break;
+                }
+                let (Some(n), Some(fo)) = (payload_reader.u8(off), payload_reader.u16_be(off + 2)) else { break };
                 next = n;
                 fragment = fo & 0xfff8 != 0;
                 off += 8;
             }
             51 => {
-                let (Some(n), Some(l)) = (r.u8(off), r.u8(off + 1)) else { break };
+                let (Some(n), Some(l)) = (payload_reader.u8(off), payload_reader.u8(off + 1)) else { break };
+                let len = (usize::from(l) + 2) * 4;
+                if off.checked_add(len).is_none_or(|next_off| next_off > end) {
+                    break;
+                }
                 next = n;
-                off += (usize::from(l) + 2) * 4;
+                off += len;
             }
             _ => break,
         }
@@ -998,6 +1010,8 @@ pub struct Flow {
     pub bytes: u64,
     pub packets_a_to_b: u64,
     pub packets_b_to_a: u64,
+    pub bytes_a_to_b: u64,
+    pub bytes_b_to_a: u64,
     pub first_frame: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_ts_ns: Option<u64>,
@@ -1124,6 +1138,8 @@ pub fn summarize(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Summary, F
                     bytes: 0,
                     packets_a_to_b: 0,
                     packets_b_to_a: 0,
+                    bytes_a_to_b: 0,
+                    bytes_b_to_a: 0,
                     first_frame: f.number,
                     first_ts_ns: f.ts_ns,
                     last_ts_ns: f.ts_ns,
@@ -1135,8 +1151,10 @@ pub fn summarize(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Summary, F
                 row.bytes += u64::from(f.original_len);
                 if forward {
                     row.packets_a_to_b += 1;
+                    row.bytes_a_to_b += u64::from(f.original_len);
                 } else {
                     row.packets_b_to_a += 1;
+                    row.bytes_b_to_a += u64::from(f.original_len);
                 }
                 if f.ts_ns.is_some() {
                     row.last_ts_ns = f.ts_ns;
@@ -1437,6 +1455,17 @@ mod tests {
     }
 
     #[test]
+    fn flows_count_bytes_per_direction() {
+        let req = eth(0x0800, &ipv4_pkt(17, [10, 0, 0, 1], [10, 0, 0, 2], &udp(40000, 9999, &[b'q'; 10])));
+        let rep = eth(0x0800, &ipv4_pkt(17, [10, 0, 0, 2], [10, 0, 0, 1], &udp(9999, 40000, &[b'r'; 300])));
+        let s = summarize(&pcap(&[req, rep]), &|| false).unwrap();
+        let flow = serde_json::to_value(&s.flows[0]).unwrap();
+        assert_eq!(flow["bytes"], 394);
+        assert_eq!(flow["bytes_a_to_b"], 52);
+        assert_eq!(flow["bytes_b_to_a"], 342);
+    }
+
+    #[test]
     fn pcapng_interface_tsoffset_adjusts_timestamps() {
         let base = pcapng(&sample_frames());
         for offset_s in [3600i64, -50i64] {
@@ -1454,6 +1483,18 @@ mod tests {
             assert_eq!((s.first_ts_ns, s.last_ts_ns), (Some(expected0), Some(expected0 + 6)));
             assert_eq!((s.flows[0].first_ts_ns, s.flows[0].last_ts_ns), (Some(expected0), Some(expected0 + 1)));
         }
+    }
+
+    #[test]
+    fn ipv6_extension_outside_declared_payload_is_ignored() {
+        let mut v6 = vec![0x60, 0, 0, 0];
+        v6.extend(0u16.to_be_bytes());
+        v6.extend([60, 64]);
+        v6.extend([0u8; 32]);
+        v6.extend([17, 0, 0, 0, 0, 0, 0, 0]);
+
+        let d = decode(101, &v6);
+        assert_eq!(d.ip.unwrap().protocol, 60);
     }
 
     #[test]

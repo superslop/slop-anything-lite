@@ -10,13 +10,14 @@
 
 pub mod acp;
 pub mod adapters;
+pub mod models;
 
 pub use acp::AcpConversation;
 pub use adapters::{AgentAdapter, AgentAdapters, ArgsCx};
 
 use crate::config::BackendOptions;
 use crate::model::Stop;
-use crate::{AgentEvent, BackendConfig, Conversation};
+use crate::{AgentEvent, BackendConfig, Conversation, FailureKind, TurnFailure};
 use craft_anything_engine::CancelToken;
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::process::Process;
@@ -44,7 +45,6 @@ pub const KNOWN: &[(&str, &str, &str)] = &[
     ("qwen-code", "qwen", "Qwen Code"),
     ("goose", "goose", "Goose"),
     ("maki", "maki", "Maki"),
-    ("aider", "aider", "Aider"),
 ];
 
 pub fn program_for(agent: &str) -> String {
@@ -120,10 +120,20 @@ pub fn cli_can_start(cli: Option<&Path>, stop: &CancelToken) -> Result<(), ToolE
 /// Whether a local build by `agent` can have our tool server: over ACP every agent is handed it,
 /// else its adapter says.
 pub fn check_builder_tools(adapter: &dyn AgentAdapter, agent: &str, options: &BackendOptions, stop: &CancelToken) -> Result<(), ToolError> {
-    if options.acp == Some(true) && acp::acp_args(agent).is_some() {
+    if selected_acp_args(adapter, agent, options).is_some() {
         return cli_can_start(craft_anything_platform::self_cli_path().as_deref(), stop);
     }
+    adapter.check_native_options(options)?;
     adapter.check_tool_server(stop)
+}
+
+/// The requested transport, shared by builder preflight and execution. ACP cannot carry explicit
+/// catalogue model/variant selections yet, so those must pass the native adapter's checks.
+fn selected_acp_args(adapter: &dyn AgentAdapter, agent: &str, options: &BackendOptions) -> Option<&'static [&'static str]> {
+    if adapter.has_model_catalog() && (options.cli_model.is_some() || options.cli_thinking.is_some()) {
+        return None;
+    }
+    acp::acp_args(agent).filter(|_| options.acp == Some(true))
 }
 
 fn toml_string(s: &str) -> String {
@@ -138,6 +148,10 @@ pub const APPROVAL_TOOL: &str = craft_anything_engine::tools::interaction_tools:
 pub enum Access {
     /// Only analyse: no edits.
     Analyse,
+    /// The same in Clean room (#564): the agent's own file, shell and web tools are refused outright,
+    /// so it works only through our tool server, which keeps the original out of reach. It isn't
+    /// left to the agent's defaults (they allow reads in its folder and may change).
+    CleanRoomAnalyse,
     /// Build: read freely, edit through our approval tool (which asks the person when needed).
     Build,
     /// Build in Clean room: every read and edit goes through our approval tool, which keeps the
@@ -164,8 +178,21 @@ pub fn build_args(
     let prompt = if prompt.starts_with('-') { format!(" {prompt}") } else { prompt.to_string() };
     let builder = matches!(access, Access::Build | Access::CleanRoomBuild);
     let question = matches!(access, Access::Question | Access::CleanRoomQuestion);
-    let reads_checked = matches!(access, Access::CleanRoomBuild | Access::CleanRoomQuestion);
+    let reads_checked = matches!(access, Access::CleanRoomBuild | Access::CleanRoomQuestion | Access::CleanRoomAnalyse);
     adapter.args(&ArgsCx { options: opts, prompt: &prompt, preamble, mcp, resume, builder, reads_checked, question })
+}
+
+/// What a run may do with files: a question reads only, a builder builds, anything else analyses;
+/// Deep mode or not decides whether the original is in reach (#564).
+fn access_for(builder: bool, deep: bool, question: bool) -> Access {
+    match (builder, deep, question) {
+        (_, true, true) => Access::Question,
+        (_, false, true) => Access::CleanRoomQuestion,
+        (true, true, false) => Access::Build,
+        (true, false, false) => Access::CleanRoomBuild,
+        (false, true, false) => Access::Analyse,
+        (false, false, false) => Access::CleanRoomAnalyse,
+    }
 }
 
 /// True when `program`'s help mentions every required flag (10 s limit, stdin closed).
@@ -258,10 +285,14 @@ pub struct StreamParser {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: Option<f64>,
+    /// A missing or invalid per-step cost cannot become a complete turn total later.
+    cost_incomplete: bool,
     pub saw_result: bool,
     /// The run was asked to continue a saved session the agent doesn't have (it lives on another
     /// computer, or under another folder), so it did nothing.
     pub session_missing: bool,
+    /// A protocol fact about the failed turn, independent of the text shown to the person.
+    pub failure: Option<TurnFailure>,
 }
 
 fn short_tool(name: &str) -> String {
@@ -303,8 +334,10 @@ impl StreamParser {
             input_tokens: 0,
             output_tokens: 0,
             cost_usd: None,
+            cost_incomplete: false,
             saw_result: false,
             session_missing: false,
+            failure: None,
         }
     }
 
@@ -409,6 +442,9 @@ impl CliSpec {
 /// agent speaks it (a local, non-building run), else one CLI run per message.
 pub fn conversation(spec: CliSpec) -> Box<dyn Conversation> {
     match acp_for(&spec).filter(|_| spec.builder.is_none()) {
+        // In Clean room the agent's own file, shell and web requests are refused, not put to the
+        // person as a card they could allow with one click (#564).
+        Some(c) if !spec.deep => Box::new(c.with_approver(acp::clean_room_chat_approver())),
         Some(c) => Box::new(c),
         None => Box::new(CliConversation::new(spec)),
     }
@@ -429,7 +465,8 @@ pub fn builder_conversation(spec: CliSpec, approver: acp::Approver) -> Box<dyn C
 fn acp_for(spec: &CliSpec) -> Option<AcpConversation> {
     let agent = spec.config.model.clone();
     let local = spec.config.ssh_host.as_deref().is_none_or(|h| h.trim().is_empty());
-    let acp_args = acp::acp_args(&agent).filter(|_| spec.options.acp == Some(true) && local)?;
+    let adapter = spec.adapters.for_agent(&agent);
+    let acp_args = selected_acp_args(adapter.as_ref(), &agent, &spec.options).filter(|_| local)?;
     let program = spec.options.command.clone().unwrap_or_else(|| program_for(&agent));
     let mut args = spec.options.args.clone();
     args.extend(acp_args.iter().map(|a| a.to_string()));
@@ -452,6 +489,7 @@ pub struct CliConversation {
     verified: Arc<Mutex<Option<bool>>>,
     /// The last run's saved session wasn't there (see [`Conversation::session_lost`]).
     lost: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<TurnFailure>>>,
 }
 
 impl CliConversation {
@@ -460,12 +498,54 @@ impl CliConversation {
     pub fn new(spec: CliSpec) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let session = Arc::new(Mutex::new(spec.resume.clone()));
-        CliConversation { spec, tx, rx, busy: Arc::default(), stop: Stop::default(), session, verified: Arc::default(), lost: Arc::default() }
+        CliConversation {
+            spec,
+            tx,
+            rx,
+            busy: Arc::default(),
+            stop: Stop::default(),
+            session,
+            verified: Arc::default(),
+            lost: Arc::default(),
+            failure: Arc::default(),
+        }
     }
 
     /// The agent's session id once a run has reported it (to continue later).
     pub fn session_id(&self) -> Option<String> {
         self.session.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn send_prompt(&mut self, text: &str, retry: bool) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            let _ = self.tx.send(AgentEvent::Error {
+                message: "Still working on the last message.".into(),
+                remediation: Some("Wait for it to finish or press stop.".into()),
+                log: None,
+            });
+            return;
+        }
+        self.stop.reset();
+        self.lost.store(false, Ordering::SeqCst);
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let (spec, tx, stop, busy) = (self.spec.clone(), self.tx.clone(), self.stop.clone(), self.busy.clone());
+        let state = RunState { session: self.session.clone(), verified: self.verified.clone(), lost: self.lost.clone(), failure: self.failure.clone() };
+        let text = text.to_string();
+        let spawned = std::thread::Builder::new().name("ai-cli".into()).spawn(move || {
+            let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cli(&spec, &text, retry, &tx, &stop, &state))).unwrap_or_else(|_| {
+                let _ = tx.send(AgentEvent::Error { message: "The agent runner hit a bug and stopped safely.".into(), remediation: None, log: None });
+                nothing_done(&spec.config.name)
+            });
+            end_turn(&busy, done, |e| {
+                let _ = tx.send(e);
+            });
+        });
+        if spawned.is_err() {
+            let _ = self.tx.send(AgentEvent::Error { message: "Couldn't start a worker thread.".into(), remediation: None, log: None });
+            end_turn(&self.busy, nothing_done(&self.spec.config.name), |e| {
+                let _ = self.tx.send(e);
+            });
+        }
     }
 }
 
@@ -504,6 +584,7 @@ struct RunState {
     session: Arc<Mutex<Option<String>>>,
     verified: Arc<Mutex<Option<bool>>>,
     lost: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<TurnFailure>>>,
 }
 
 /// End a turn: take the next message first, then say the turn is done (`send(done)`), since
@@ -524,13 +605,26 @@ fn nothing_done(backend: &str) -> AgentEvent {
 /// send once the conversation can take the next message. The session it reports is kept for the
 /// next message; one it was asked to continue but doesn't have is forgotten and flagged in
 /// `state.lost` before the error that says so is sent.
-fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, state: &RunState) -> AgentEvent {
-    let RunState { session, verified, lost } = state;
+fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, stop: &Stop, state: &RunState) -> AgentEvent {
+    let RunState { session, verified, lost, failure } = state;
     let name = spec.config.name.clone();
     let agent = spec.config.model.clone();
     let program = spec.options.command.clone().unwrap_or_else(|| program_for(&agent));
     let remote = spec.config.ssh_host.clone().filter(|h| !h.trim().is_empty());
     let mut adapter = spec.adapters.for_agent(&agent);
+    if let Err(e) = adapter.check_native_options(&spec.options) {
+        let _ = tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
+        return nothing_done(&name);
+    }
+    if let Err(e) = adapter.validate_model(&spec.config, &spec.options, spec.project.as_deref(), stop) {
+        let event = if e.code == ErrorCode::Cancelled {
+            AgentEvent::Status { text: "Stopped.".into() }
+        } else {
+            AgentEvent::Error { message: e.message, remediation: e.remediation, log: None }
+        };
+        let _ = tx.send(event);
+        return nothing_done(&name);
+    }
     let (help, needed) = adapter.required_flags();
     if !needed.is_empty() {
         let ok = match remote {
@@ -545,6 +639,9 @@ fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, sta
                 text: format!("{program}'s help doesn't list {} here, so it runs with the plain adapter (prompt in, text out).", needed.join(" / ")),
             });
             adapter = Arc::new(adapters::Plain);
+            // A saved session cannot be continued through the adapter that will actually run.
+            // Forget it before retry chooses between the original request and a continuation.
+            *session.lock().unwrap_or_else(PoisonError::into_inner) = None;
         } else if !ok {
             let _ = tx.send(AgentEvent::Status { text: format!("Couldn't confirm that {program} has {}; trying it anyway.", needed.join(" / ")) });
         }
@@ -552,6 +649,7 @@ fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, sta
     let preamble = spec.preamble.clone().unwrap_or_else(|| crate::prompt::cli_preamble(spec.beginner));
     let mcp = mcp_for(spec, remote.is_some());
     let resume = session.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let text = if retry && adapter.resumes() && resume.is_some() { crate::failure::CONTINUE_TURN } else { text };
     let builder = spec.builder.is_some();
     // A question goes only to an agent that can be held to reading (a fallback adapter can't).
     if spec.question && !adapter.answers_questions() {
@@ -562,13 +660,7 @@ fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, sta
         });
         return nothing_done(&name);
     }
-    let access = match (&spec.builder, spec.deep, spec.question) {
-        (_, true, true) => Access::Question,
-        (_, false, true) => Access::CleanRoomQuestion,
-        (Some(_), true, false) => Access::Build,
-        (Some(_), false, false) => Access::CleanRoomBuild,
-        (None, _, false) => Access::Analyse,
-    };
+    let access = access_for(spec.builder.is_some(), spec.deep, spec.question);
     let args = build_args(adapter.as_ref(), &spec.options, text, &preamble, &mcp, if adapter.resumes() { resume.as_deref() } else { None }, access);
     let shown = FailureContext::new(&program, &args, text, remote.as_deref(), spec);
     // A builder turn may take hours and sit silent for long stretches: Ghidra's first look at a big
@@ -592,7 +684,9 @@ fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, sta
     let _ =
         tx.send(AgentEvent::Status { text: format!("Asking {}{}…", display_for(&agent), remote.as_ref().map(|h| format!(" on {h}")).unwrap_or_default()) });
     let parser = Arc::new(Mutex::new(StreamParser::new(adapter.clone())));
-    let (p2, tx2, tx_err, lost2) = (parser.clone(), tx.clone(), tx.clone(), lost.clone());
+    let (p2, tx2, tx_err, lost2, failure2) = (parser.clone(), tx.clone(), tx.clone(), lost.clone(), failure.clone());
+    let failed_tools = Arc::new(AtomicBool::new(false));
+    let (failed_tools2, failed_tools3) = (failed_tools.clone(), failed_tools.clone());
     let stop2 = stop.clone();
     let mut proc = (if remote.is_none() { adapter.process(&prog) } else { Process::new(&prog) })
         .args(&argv)
@@ -603,13 +697,22 @@ fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, sta
     }
     let mut proc = proc
         .stdout_cap(4 * 1024 * 1024)
-        .cancel_when(move || stop2.is_stopped())
+        .cancel_when(move || stop2.is_stopped() || failed_tools2.load(Ordering::SeqCst))
         .on_stdout_line(move |l| {
+            if failed_tools3.load(Ordering::SeqCst) {
+                return;
+            }
             let mut p = p2.lock().unwrap_or_else(PoisonError::into_inner);
             let events = p.line(l);
             // Said before the error that follows it, so whoever reads the error can tell.
             if p.session_missing {
                 lost2.store(true, Ordering::SeqCst);
+            }
+            if let Some(failed) = p.failure {
+                *failure2.lock().unwrap_or_else(PoisonError::into_inner) = Some(failed);
+                if failed.kind == FailureKind::ToolsUnavailable {
+                    failed_tools3.store(true, Ordering::SeqCst);
+                }
             }
             for e in events {
                 let _ = tx2.send(e);
@@ -635,7 +738,26 @@ fn run_cli(spec: &CliSpec, text: &str, tx: &Sender<AgentEvent>, stop: &Stop, sta
     } else if let Some(id) = &p.session_id {
         *session.lock().unwrap_or_else(PoisonError::into_inner) = Some(id.clone());
     }
+    if p.failure.is_none() {
+        let failed = match &result {
+            Ok(out) if !out.success => Some(TurnFailure::process_exit(out.code)),
+            Err(e) if e.code != ErrorCode::Cancelled => Some(TurnFailure::from_process(e)),
+            _ => None,
+        };
+        *failure.lock().unwrap_or_else(PoisonError::into_inner) = failed;
+    }
     match result {
+        // The protocol already named the required tool server. Stop the owned process without
+        // replacing that useful error with the cancellation used to stop it.
+        result if failed_tools.load(Ordering::SeqCst) => {
+            let (out, error) = match &result {
+                Ok(out) => (Some(out), None),
+                Err(e) => (None, Some(e.message.as_str())),
+            };
+            if let Some(path) = shown.save_with(&agent, out, Some("Craft Anything's tools did not start."), error).0 {
+                let _ = tx.send(AgentEvent::Status { text: format!("The details are in {}", path.display()) });
+            }
+        }
         // It said why already, and there's nothing more in its output to keep.
         Ok(_) if p.session_missing => {}
         Ok(out) if !out.success && !p.saw_result => {
@@ -775,6 +897,14 @@ impl FailureContext {
 }
 
 impl Conversation for CliConversation {
+    fn retry(&mut self, text: &str) {
+        self.send_prompt(text, true);
+    }
+
+    fn last_failure(&self) -> Option<TurnFailure> {
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn session_id(&self) -> Option<String> {
         CliConversation::session_id(self)
     }
@@ -789,34 +919,7 @@ impl Conversation for CliConversation {
     /// and the conversation takes the next message before that's sent: whoever reads it may send
     /// the next message at once (a session that wasn't there is followed by a fresh start).
     fn send(&mut self, text: &str) {
-        if self.busy.swap(true, Ordering::SeqCst) {
-            let _ = self.tx.send(AgentEvent::Error {
-                message: "Still working on the last message.".into(),
-                remediation: Some("Wait for it to finish or press stop.".into()),
-                log: None,
-            });
-            return;
-        }
-        self.stop.reset();
-        self.lost.store(false, Ordering::SeqCst);
-        let (spec, tx, stop, busy) = (self.spec.clone(), self.tx.clone(), self.stop.clone(), self.busy.clone());
-        let state = RunState { session: self.session.clone(), verified: self.verified.clone(), lost: self.lost.clone() };
-        let text = text.to_string();
-        let spawned = std::thread::Builder::new().name("ai-cli".into()).spawn(move || {
-            let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cli(&spec, &text, &tx, &stop, &state))).unwrap_or_else(|_| {
-                let _ = tx.send(AgentEvent::Error { message: "The agent runner hit a bug and stopped safely.".into(), remediation: None, log: None });
-                nothing_done(&spec.config.name)
-            });
-            end_turn(&busy, done, |e| {
-                let _ = tx.send(e);
-            });
-        });
-        if spawned.is_err() {
-            let _ = self.tx.send(AgentEvent::Error { message: "Couldn't start a worker thread.".into(), remediation: None, log: None });
-            end_turn(&self.busy, nothing_done(&self.spec.config.name), |e| {
-                let _ = self.tx.send(e);
-            });
-        }
+        self.send_prompt(text, false);
     }
 
     fn poll(&mut self) -> Vec<AgentEvent> {
@@ -845,6 +948,47 @@ impl Drop for CliConversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_craft_tool_server_is_reported_from_its_init_status() {
+        let mut p = StreamParser::new(adapter_for("claude-code"));
+        let events = p.line(r#"{"type":"system","subtype":"init","session_id":"cannot-build","mcp_servers":[{"name":"craft-anything","status":"failed"}]}"#);
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("tools") && message.contains("start"))),
+            "a failed required tool server must end the turn with an actionable error: {events:?}"
+        );
+        assert_eq!(p.failure, Some(TurnFailure::new(FailureKind::ToolsUnavailable)));
+    }
+
+    #[test]
+    fn optional_or_pending_mcp_servers_do_not_block_the_builder() {
+        for status in ["connected", "pending"] {
+            let mut p = StreamParser::new(adapter_for("claude-code"));
+            let init = json!({"type":"system","subtype":"init","mcp_servers":[{"name":"craft-anything","status":status},{"name":"optional-service","status":"failed"}]});
+            assert!(p.line(&init.to_string()).is_empty());
+            assert!(p.failure.is_none());
+        }
+        let mut p = StreamParser::new(adapter_for("claude-code"));
+        assert!(!p.line(r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"craft-anything","status":"needs-auth"}]}"#).is_empty());
+        assert_eq!(p.failure, Some(TurnFailure::new(FailureKind::ToolsUnavailable)));
+    }
+
+    #[test]
+    fn claude_assistant_error_codes_survive_localized_display_messages() {
+        for (code, kind) in [
+            ("authentication_failed", FailureKind::Authentication),
+            ("billing_error", FailureKind::Billing),
+            ("rate_limit", FailureKind::RateLimited),
+            ("server_error", FailureKind::Transient),
+        ] {
+            let mut p = StreamParser::new(adapter_for("claude-code"));
+            let events = p.line(&json!({"type":"assistant","error":code,"message":{"content":[{"type":"text","text":"服务暂时不可用"}]}}).to_string());
+            assert!(matches!(events.as_slice(), [AgentEvent::Error { .. }]));
+            assert_eq!(p.failure, Some(TurnFailure::new(kind)));
+            p.line(r#"{"type":"result","is_error":true,"result":"the turn ended"}"#);
+            assert_eq!(p.failure, Some(TurnFailure::new(kind)), "result must keep the more specific code");
+        }
+    }
 
     /// #506: under a Flatpak `~/.claude` is read-only, so Claude Code gets a folder of ours to save
     /// its conversations in (so `--resume` finds them); the person's own `CLAUDE_CONFIG_DIR` and a
@@ -880,6 +1024,115 @@ mod tests {
     }
     use crate::BackendKind;
 
+    /// Explicit OpenCode picks cannot pass ACP preflight then run natively without our MCP server.
+    #[test]
+    fn explicit_opencode_picks_are_refused_before_native_chat_or_build() {
+        let adapter = adapter_for("opencode");
+        let defaults = BackendOptions { acp: Some(true), ..Default::default() };
+        assert!(selected_acp_args(adapter.as_ref(), "opencode", &defaults).is_some());
+        for (model, thinking) in [(Some("test/model"), None), (None, Some(crate::Effort::High)), (Some("test/model"), Some(crate::Effort::Max))] {
+            for acp in [false, true] {
+                let options = BackendOptions {
+                    command: Some("missing-test-opencode".into()),
+                    cli_model: model.map(str::to_string),
+                    cli_thinking: thinking,
+                    acp: Some(acp),
+                    ..Default::default()
+                };
+                let refused = check_builder_tools(adapter.as_ref(), "opencode", &options, &CancelToken::default()).unwrap_err();
+                assert_eq!(refused.code, ErrorCode::BadSettings);
+                assert!(refused.message.contains("cannot yet connect"));
+                for host in [None, Some("test-host")] {
+                    for building in [false, true] {
+                        let config = BackendConfig {
+                            name: "OpenCode".into(),
+                            kind: BackendKind::AgentCli,
+                            model: "opencode".into(),
+                            base_url: None,
+                            ssh_host: host.map(str::to_string),
+                            enabled: true,
+                        };
+                        let mut spec = CliSpec::new(config, options.clone(), false, None);
+                        if building {
+                            spec.builder = Some(Builder { investigation: None, inbox: PathBuf::from("test-inbox") });
+                        }
+                        assert!(acp_for(&spec).is_none());
+                        let mut c = if building { builder_conversation(spec, Arc::new(|_, _| false)) } else { conversation(spec) };
+                        c.send("test");
+                        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                        let mut events = Vec::new();
+                        while !events.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                            assert!(std::time::Instant::now() < deadline, "missing terminal event: {events:?}");
+                            events.extend(c.poll());
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        assert!(!c.is_busy());
+                        events.extend(c.poll());
+                        assert!(
+                            matches!(events.as_slice(), [
+                            AgentEvent::Error { message, remediation: Some(_), log: None },
+                            AgentEvent::TurnDone { backend, input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false }
+                        ] if message == &refused.message && backend == "OpenCode"),
+                            "{events:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validation failures finish exactly once, preserving cancellation status and other error details.
+    #[test]
+    fn cancelled_model_validation_reports_stopped_and_other_failures_stay_errors() {
+        struct RefusedModel(ErrorCode);
+        impl AgentAdapter for RefusedModel {
+            /// Register the fixture without replacing any built-in agent.
+            fn ids(&self) -> &'static [&'static str] {
+                &["test-validation"]
+            }
+            /// Fail the test if a rejected model reaches command construction.
+            fn args(&self, _cx: &ArgsCx) -> Vec<String> {
+                panic!("failed validation must not start the agent")
+            }
+            /// Return the selected validation failure without performing I/O.
+            fn validate_model(&self, _config: &BackendConfig, _options: &BackendOptions, _directory: Option<&Path>, _stop: &Stop) -> Result<(), ToolError> {
+                Err(ToolError::new(self.0, "Validation stopped").with_remediation("Reload the models."))
+            }
+        }
+        for code in [ErrorCode::Cancelled, ErrorCode::BadInput, ErrorCode::TimedOut] {
+            let config = BackendConfig {
+                name: "Test".into(),
+                kind: BackendKind::AgentCli,
+                model: "test-validation".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            };
+            let mut spec = CliSpec::new(config, BackendOptions::default(), false, None);
+            spec.adapters.register(Arc::new(RefusedModel(code)));
+            let mut conversation = CliConversation::new(spec);
+            conversation.send("test");
+            let events: Vec<_> = (0..2).map(|_| conversation.rx.recv_timeout(Duration::from_secs(5)).unwrap()).collect();
+            assert!(!conversation.is_busy(), "the next message is accepted before TurnDone");
+            assert!(conversation.poll().is_empty(), "exactly one terminal event");
+            if code == ErrorCode::Cancelled {
+                assert!(matches!(events.as_slice(), [AgentEvent::Status { text }, AgentEvent::TurnDone { .. }] if text == "Stopped."), "{events:?}");
+            } else {
+                assert!(
+                    matches!(events.as_slice(), [AgentEvent::Error { message, remediation: Some(help), log: None }, AgentEvent::TurnDone { .. }]
+                    if message == "Validation stopped" && help == "Reload the models."),
+                    "{events:?}"
+                );
+            }
+            assert!(
+                matches!(events.last(), Some(AgentEvent::TurnDone {
+                backend, input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false,
+            }) if backend == "Test"),
+                "{events:?}"
+            );
+        }
+    }
+
     fn mcp() -> McpCommand {
         McpCommand { command: "/opt/ca/craft-anything-cli".into(), args: vec!["mcp".into(), "--project".into(), "/p/x.cany".into()], notes: None }
     }
@@ -905,6 +1158,43 @@ mod tests {
         assert!(pos("--mcp-config") > pos("--resume"));
     }
 
+    /// #540: only tools that ask the person themselves are approved on Codex's side.
+    #[test]
+    fn every_tool_approved_for_codex_is_registered_and_asks_for_consent() {
+        let e = craft_anything_engine::Engine::shared(craft_anything_engine::testing::session(), crate::rebuild::tools::specs());
+        for id in craft_anything_engine::AGENT_APP_PREAPPROVED_TOOLS {
+            let spec = e.registry().get(id).unwrap_or_else(|| panic!("{id} isn't registered"));
+            assert!(spec.effects.needs_consent(), "{id} must ask for consent itself");
+        }
+    }
+
+    /// #540: a refused Codex tool call came back as "null"; it says why and how to fix it.
+    #[test]
+    fn a_codex_tool_refused_for_approval_explains_the_way_out() {
+        let mut p = StreamParser::new(adapter_for("codex"));
+        let line = r#"{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"craft-anything","tool":"rebuild_start","status":"failed","result":null,"error":{"message":"tool rebuild_start requires approval, but approval policy is never"}}}"#;
+        let v: Value = serde_json::from_str(line).unwrap();
+        let events = adapter_for("codex").parse(&mut p, &v);
+        let text = format!("{events:?}");
+        assert!(text.contains("setup --client codex --yes"), "{text}");
+        // Another server's refusal keeps Codex's words: our setup can't fix it.
+        let mut p = StreamParser::new(adapter_for("codex"));
+        let theirs = line.replace("craft-anything", "other-server");
+        let text = format!("{:?}", adapter_for("codex").parse(&mut p, &serde_json::from_str::<Value>(&theirs).unwrap()));
+        assert!(text.contains("approval policy is never") && !text.contains("setup --client codex"), "{text}");
+        let mut p = StreamParser::new(adapter_for("codex"));
+        let v: Value = serde_json::from_str(line).unwrap();
+        let events = adapter_for("codex").parse(&mut p, &v);
+        let text = format!("{events:?}");
+        assert!(!text.contains("\"null\""), "{text}");
+        // Any other failure shows its own message, not the JSON around it.
+        let mut p = StreamParser::new(adapter_for("codex"));
+        let other =
+            r#"{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","tool":"x","status":"failed","result":null,"error":{"message":"boom"}}}"#;
+        let text = format!("{:?}", adapter_for("codex").parse(&mut p, &serde_json::from_str::<Value>(other).unwrap()));
+        assert!(text.contains("boom") && !text.contains("null"), "{text}");
+    }
+
     #[test]
     fn codex_and_gemini_args() {
         let a = build_args(adapter_for("codex").as_ref(), &BackendOptions::default(), "q", "P:", &mcp(), None, Access::Analyse);
@@ -924,6 +1214,10 @@ mod tests {
         assert_eq!(&r[..3], &["exec".to_string(), "resume".to_string(), "thread-9".to_string()]);
         assert!(r.contains(&"--json".to_string()));
         assert_eq!(r.last().unwrap(), "-");
+        // #540: `codex exec` can't ask, so the tools that ask for themselves are approved in the
+        // same -c list, and nothing wider.
+        assert!(a.contains(&"mcp_servers.craft-anything.tools.rebuild_start.approval_mode=\"approve\"".to_string()));
+        assert!(!a.iter().any(|x| x.contains("default_tools_approval_mode")));
         let g = build_args(adapter_for("gemini-cli").as_ref(), &BackendOptions::default(), "q", "", &mcp(), None, Access::Analyse);
         assert!(g.windows(2).any(|w| w[0] == "--output-format" && w[1] == "stream-json"));
         let o = BackendOptions { args: vec!["run".into()], ..Default::default() };
@@ -945,6 +1239,23 @@ mod tests {
         assert!(a.windows(2).any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
         assert!(a.contains(&"mcp_servers.craft-anything.command=\"/opt/ca/craft-anything-cli\"".to_string()));
         assert!(a.contains(&"mcp_servers.craft-anything.args=[\"mcp\", \"--project\", \"/p/x.cany\"]".to_string()));
+    }
+
+    #[test]
+    fn gemini_long_prompt_goes_in_on_stdin() {
+        // npm starts Gemini CLI through `gemini.cmd`, where cmd.exe allows 8,191 characters.
+        let gemini = adapter_for("gemini-cli");
+        let prompt = "x".repeat(40_831);
+        let o = BackendOptions { cli_model: Some("gemini-2.5-pro".into()), ..Default::default() };
+        let a = build_args(gemini.as_ref(), &o, &prompt, "P:", &mcp(), None, Access::Analyse);
+        assert!(gemini.prompt_on_stdin(), "gemini must read its message from stdin");
+        assert_eq!(gemini.stdin_text("P:", &prompt), format!("P:{prompt}"), "the whole message, preamble first");
+        assert!(!a.iter().any(|x| x.contains(&prompt) || x.contains("P:")), "{a:?}");
+        assert!(a.iter().map(|x| x.len() + 1).sum::<usize>() < 4096, "argv stays short");
+        // Gemini CLI appends `-p` to stdin; empty, it adds nothing but keeps the run headless.
+        assert_eq!(&a[a.len() - 2..], &["-p".to_string(), String::new()]);
+        assert!(a.windows(2).any(|w| w[0] == "-m" && w[1] == "gemini-2.5-pro"));
+        assert!(a.windows(2).any(|w| w[0] == "--output-format" && w[1] == "stream-json"));
     }
 
     #[test]
@@ -1076,6 +1387,53 @@ mod tests {
         let m = McpCommand::local_or_remote(false, Some("/p/inv.cany".into()), Some("/p/inbox".into()));
         assert!(m.args.windows(2).any(|w| w[0] == "--inbox" && w[1] == "/p/inbox"));
         assert!(!McpCommand::local_or_remote(true, None, Some("/p/inbox".into())).args.contains(&"--inbox".to_string()));
+    }
+
+    /// #564: in Clean room a chat's reads aren't left to Claude Code's defaults. Its own file, shell
+    /// and web tools are refused outright (a deny rule beats any allow), so only our tool server,
+    /// which keeps the original out of reach, is left; Deep mode is unchanged.
+    #[test]
+    fn a_clean_room_chat_refuses_the_agents_own_file_tools_outright() {
+        let args = |access| build_args(adapter_for("claude-code").as_ref(), &BackendOptions::default(), "q", "PRE", &mcp(), None, access);
+        let clean = args(Access::CleanRoomAnalyse);
+        let denied = &clean[clean.iter().position(|x| x == "--disallowedTools").expect("a deny list") + 1..];
+        for t in ["Read", "Glob", "Grep", "LS", "NotebookRead", "Write", "Edit", "Bash", "PowerShell", "WebFetch", "WebSearch"] {
+            assert!(denied.contains(&t.to_string()), "{t} is refused: {denied:?}");
+        }
+        let allowed = &clean[clean.iter().position(|x| x == "--allowedTools").unwrap() + 1..clean.iter().position(|x| x == "--disallowedTools").unwrap()];
+        assert_eq!(allowed, ["mcp__craft-anything__*"], "only our tools are allowed");
+        let deep = args(Access::Analyse);
+        assert!(!deep.contains(&"--disallowedTools".to_string()), "Deep mode keeps its defaults: {deep:?}");
+        // A Clean room question refuses reading too (it used to leave that to the default).
+        let q = args(Access::CleanRoomQuestion);
+        let denied = &q[q.iter().position(|x| x == "--disallowedTools").unwrap() + 1..];
+        for t in ["Read", "Glob", "Grep", "LS", "NotebookRead", "Write", "Bash"] {
+            assert!(denied.contains(&t.to_string()), "{t} is refused in a Clean room question");
+        }
+        assert!(!q.contains(&"--allowedTools".to_string()));
+    }
+
+    /// #564: chats take their access from the mode, as builds and questions do.
+    #[test]
+    fn a_run_gets_its_access_from_what_it_is_and_the_mode() {
+        assert_eq!(access_for(false, true, false), Access::Analyse);
+        assert_eq!(access_for(false, false, false), Access::CleanRoomAnalyse);
+        assert_eq!(access_for(true, true, false), Access::Build);
+        assert_eq!(access_for(true, false, false), Access::CleanRoomBuild);
+        assert_eq!(access_for(false, true, true), Access::Question);
+        assert_eq!(access_for(false, false, true), Access::CleanRoomQuestion);
+        assert_eq!(access_for(true, false, true), Access::CleanRoomQuestion);
+    }
+
+    /// #564: an ACP chat in Clean room refuses the agent's own reads, writes, commands and fetches
+    /// instead of putting them to the person.
+    #[test]
+    fn a_clean_room_acp_chat_refuses_the_agents_own_actions() {
+        let approve = acp::clean_room_chat_approver();
+        for tool in ["Read", "Write", "Bash", "WebFetch"] {
+            assert!(!approve(tool, &serde_json::json!({"file_path": "/original/secret.txt"})), "{tool}");
+        }
+        assert!(approve("TodoWrite", &serde_json::Value::Null));
     }
 
     #[test]
@@ -1295,6 +1653,70 @@ mod tests {
         assert!(text.contains("Request"), "preamble is passed too");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_retry_uses_the_adapter_selected_after_checking_required_flags() {
+        retry_after_checking_flags(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_first_retry_waits_for_the_actual_adapter_selection() {
+        retry_after_checking_flags(false);
+    }
+
+    #[cfg(unix)]
+    fn retry_after_checking_flags(send_first: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        for supported in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let program = dir.path().join("agy");
+            let help = if supported { "--output-format stream-json" } else { "old command options" };
+            let script = format!(
+                "#!/bin/sh\nd=$(dirname \"$0\")\nif [ \"$1\" = --help ]; then echo '{help}'; exit 0; fi\nprintf '%s\\n' \"$@\" > \"$d/argv\"\necho run >> \"$d/runs\"\nexit 7\n"
+            );
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let config = BackendConfig {
+                name: "Antigravity".into(),
+                kind: BackendKind::AgentCli,
+                model: "antigravity".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            };
+            let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+            let mut spec = CliSpec::new(config, options, false, None);
+            spec.preamble = Some("P:".into());
+            spec.resume = Some("saved".into());
+            let mut c = CliConversation::new(spec);
+            let finish = |c: &mut CliConversation| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut all = Vec::new();
+                while !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                    assert!(std::time::Instant::now() < deadline, "no TurnDone: {all:?}");
+                    all.extend(c.poll());
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                all
+            };
+            let original = "Build the requested blue header.";
+            if send_first {
+                c.send(original);
+                let first = finish(&mut c);
+                assert!(first.iter().any(|e| matches!(e, AgentEvent::Error { .. })), "{first:?}");
+            }
+            c.retry(original);
+            let retried = finish(&mut c);
+            assert_eq!(retried.iter().any(|e| matches!(e, AgentEvent::Status { text } if text.contains("plain adapter"))), !supported);
+            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+            let expected = format!("P:{}", if supported { crate::failure::CONTINUE_TURN } else { original });
+            assert_eq!(argv.lines().last(), Some(expected.as_str()), "supported={supported}: {argv}");
+            assert_eq!(argv.contains("--conversation\nsaved\n"), supported, "{argv}");
+            assert_eq!(std::fs::read_to_string(dir.path().join("runs")).unwrap(), if send_first { "run\nrun\n" } else { "run\n" });
+        }
+    }
+
     /// #402: a 34,641-character message in argv passed Windows' command-line limit (os error 206);
     /// Claude Code reads it from stdin instead.
     #[cfg(unix)]
@@ -1386,6 +1808,44 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             .run();
         assert!(run.is_ok(), "{run:?}");
         assert_eq!(std::fs::read_to_string(&out).unwrap_or_default(), message);
+    }
+
+    /// A stand-in `gemini.cmd`, started the way npm installs Gemini CLI on Windows, gets the whole
+    /// message (preamble first) on stdin and only short options in argv, for a normal message and
+    /// for one longer than cmd.exe's 8,191 characters. Its stdin goes to `stdin_echo_child`.
+    #[cfg(windows)]
+    #[test]
+    fn gemini_cmd_reads_its_message_on_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("gemini.cmd");
+        let exe = std::env::current_exe().unwrap();
+        let script = format!(
+            "@echo off\r\nif \"%~1\"==\"--help\" (echo --output-format stream-json& exit /b 0)\r\necho %*> \"%~dp0argv\"\r\nset {STDIN_ECHO_ENV}=%~dp0stdin\r\n\"{}\" --exact --test-threads=1 cli_agents::tests::stdin_echo_child >nul\r\necho {{\"type\":\"result\",\"stats\":{{\"input_tokens\":1,\"output_tokens\":1}}}}\r\n",
+            exe.display()
+        );
+        std::fs::write(&program, script).unwrap();
+        for prompt in ["q".to_string(), "x".repeat(40_831)] {
+            let _ = std::fs::remove_file(dir.path().join("stdin"));
+            let config =
+                BackendConfig { name: "Gemini".into(), kind: BackendKind::AgentCli, model: "gemini-cli".into(), base_url: None, ssh_host: None, enabled: true };
+            let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+            let mut spec = CliSpec::new(config, options, false, None);
+            spec.preamble = Some("P:".into());
+            let mut c = CliConversation::new(spec);
+            c.send(&prompt);
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            let mut all = Vec::new();
+            while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                all.extend(c.poll());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap_or_default();
+            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap_or_default();
+            assert_eq!(stdin.len(), prompt.len() + 2, "{all:?}");
+            assert!(stdin == format!("P:{prompt}"), "the whole message, preamble first");
+            assert!(!argv.contains("P:"), "{argv}");
+            assert!(argv.trim_end().ends_with("-p \"\""), "{argv}");
+        }
     }
 
     const STDIN_ECHO_ENV: &str = "CRAFT_ANYTHING_TEST_STDIN_ECHO";

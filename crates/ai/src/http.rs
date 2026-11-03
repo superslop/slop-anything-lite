@@ -55,7 +55,12 @@ pub fn status_error(what: &str, status: u16, body: &str) -> ToolError {
         500..=599 => (ErrorCode::EngineMissing, "The service is having trouble. Try again soon, or use another backend."),
         _ => (ErrorCode::BadInput, "The request was rejected; see the message."),
     };
-    ToolError::new(code, format!("{what} answered {status}: {detail}")).with_remediation(remediation).with_details(serde_json::json!({"status": status}))
+    let provider = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.pointer("/error/code").and_then(Value::as_str).or_else(|| v.pointer("/error/type").and_then(Value::as_str)).map(str::to_string));
+    ToolError::new(code, format!("{what} answered {status}: {detail}"))
+        .with_remediation(remediation)
+        .with_details(serde_json::json!({"status": status, "provider_error": provider}))
 }
 
 /// Read only the human-readable fields, never serialise an arbitrary provider payload.
@@ -112,8 +117,13 @@ pub fn post_json(agent: &ureq::Agent, what: &str, url: &str, headers: &[(&str, S
     let resp = req.send(body.to_string()).map_err(|e| net_error(what, e))?;
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
+        let retry_after = resp.headers().get("retry-after").and_then(|h| h.to_str().ok()).and_then(|s| s.trim().parse::<u64>().ok());
         let text = resp.into_body().read_to_string().unwrap_or_default();
-        return Err(status_error(what, status, &text));
+        let mut error = status_error(what, status, &text);
+        if let (Some(seconds), Some(Value::Object(details))) = (retry_after, error.details.as_mut()) {
+            details.insert("retry_after_secs".into(), Value::from(seconds.min(crate::failure::MAX_RETRY_WAIT)));
+        }
+        return Err(error);
     }
     Ok(Box::new(resp.into_body().into_reader()))
 }
@@ -142,6 +152,8 @@ pub struct SseEvent {
 
 /// Longest single SSE line we accept (protects memory against a hostile server).
 const MAX_SSE_LINE: usize = 8 * 1024 * 1024;
+/// Most data retained for one event, including newlines between its `data:` fields.
+const MAX_SSE_EVENT_DATA: usize = 8 * 1024 * 1024;
 
 /// Parse an SSE stream, calling `f` for each event. `f` returns false to stop early.
 /// Handles CRLF, multi-line `data:`, comments (`:`), and a final event without a blank line.
@@ -184,6 +196,10 @@ pub fn parse_sse<R: Read>(r: R, mut f: impl FnMut(SseEvent) -> Result<bool, Tool
         match field {
             "event" => cur.event = Some(value.to_string()),
             "data" => {
+                let size = cur.data.len().saturating_add(usize::from(has_data)).saturating_add(value.len());
+                if size > MAX_SSE_EVENT_DATA {
+                    return Err(ToolError::new(ErrorCode::OverLimit, "The stream sent an event whose data was too large."));
+                }
                 if has_data {
                     cur.data.push('\n');
                 }
@@ -231,6 +247,37 @@ mod tests {
         })
         .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn sse_event_data_is_bounded_across_lines() {
+        let first = "é".repeat(2 * 1024 * 1024);
+        let full = format!("data:{first}\ndata:{}\n", "x".repeat(4 * 1024 * 1024 - 1));
+        for stream in [format!("data:{first}\ndata:{first}\n\n"), format!("data:{first}\ndata:{first}"), format!("{full}data:\n\n")] {
+            let mut emitted = 0;
+            let error = parse_sse(stream.as_bytes(), |_| {
+                emitted += 1;
+                Ok(true)
+            })
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::OverLimit);
+            assert_eq!(emitted, 0, "an oversized event must not reach the provider parser");
+            assert!(!error.message.contains('é'), "the error must not echo response data");
+        }
+    }
+
+    #[test]
+    fn sse_event_data_limit_preserves_boundaries_and_eof() {
+        let first = "é".repeat(2 * 1024 * 1024);
+        let full = format!("data:{first}\r\ndata:{}\r\n", "x".repeat(4 * 1024 * 1024 - 1));
+        let stream = format!("{full}\r\ndata:\r\n\r\n{full}");
+        let mut lengths = Vec::new();
+        parse_sse(stream.as_bytes(), |event| {
+            lengths.push(event.data.len());
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(lengths, [8 * 1024 * 1024, 0, 8 * 1024 * 1024]);
     }
 
     #[test]
@@ -336,5 +383,40 @@ mod tests {
         assert_eq!(e.code, ErrorCode::NoPermission);
         assert!(e.message.contains("invalid x-api-key"));
         assert_eq!(status_error("x", 429, "slow down").code, ErrorCode::OverLimit);
+    }
+
+    #[test]
+    fn a_post_keeps_a_structured_retry_after_header() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut len = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    len = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; len]).unwrap();
+            let body = r#"{"error":{"type":"rate_limit_error","message":"服务限流"}}"#;
+            write!(stream, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let result = post_json(&quick_agent(Duration::from_secs(5)), "Stand-in", &url, &[], &serde_json::json!({}));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("a rate limit is not a response stream"),
+        };
+        assert_eq!(crate::TurnFailure::from_api(&error), crate::TurnFailure { kind: crate::FailureKind::RateLimited, retry_after_secs: Some(7) });
+        server.join().unwrap();
     }
 }

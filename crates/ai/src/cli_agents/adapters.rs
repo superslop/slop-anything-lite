@@ -38,6 +38,30 @@ pub trait AgentAdapter: Send + Sync {
     fn ids(&self) -> &'static [&'static str];
     /// argv after the program for one message.
     fn args(&self, cx: &ArgsCx) -> Vec<String>;
+    /// Whether this agent supplies its own live model and thinking choices.
+    fn has_model_catalog(&self) -> bool {
+        false
+    }
+    /// Query models visible in this backend's execution context, respecting cancellation.
+    /// Agents without catalogue support return an empty list.
+    fn model_catalog(
+        &self,
+        _config: &BackendConfig,
+        _options: &BackendOptions,
+        _directory: Option<&Path>,
+        _stop: &Stop,
+    ) -> Result<Vec<models::AgentModel>, ToolError> {
+        Ok(Vec::new())
+    }
+    /// Check a saved choice in the actual run context before invoking the agent.
+    fn validate_model(&self, _config: &BackendConfig, _options: &BackendOptions, _directory: Option<&Path>, _stop: &Stop) -> Result<(), ToolError> {
+        Ok(())
+    }
+    /// Refuse options that the native transport cannot support, before preflight or process I/O.
+    /// Saving a model choice and discovering its catalogue do not imply native execution support.
+    fn check_native_options(&self, _options: &BackendOptions) -> Result<(), ToolError> {
+        Ok(())
+    }
     /// `(help invocation, substrings it must mention)`, checked once before the first run; when
     /// they're missing the run falls back to the plain adapter. Empty: nothing to check.
     fn required_flags(&self) -> (&'static [&'static str], &'static [&'static str]) {
@@ -216,6 +240,10 @@ pub fn notes_hook_settings(cli: &str, dir: &std::path::Path) -> String {
 const CHANGING_TOOLS: &[&str] =
     &["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell", "WebFetch", "WebSearch", "Task", "TodoWrite", "AskUserQuestion"];
 
+/// Claude Code's tools that read files, refused outright in Clean room (#564): its defaults let it
+/// read in its own folder and refuse elsewhere only until a release or a setting changes that.
+const READING_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead"];
+
 /// Claude Code answering a question about a build: the builder's session copied
 /// (`--fork-session`) and the copy not kept, no tool server, and only Read, Glob and Grep (none in
 /// Clean room).
@@ -235,7 +263,9 @@ fn question_args(mut a: Vec<String>, cx: &ArgsCx) -> Vec<String> {
     }
     a.extend(["--no-session-persistence".into(), "--strict-mcp-config".into(), "--disallowedTools".into()]);
     a.extend(CHANGING_TOOLS.iter().map(|t| t.to_string()));
-    if !cx.reads_checked {
+    if cx.reads_checked {
+        a.extend(READING_TOOLS.iter().map(|t| t.to_string()));
+    } else {
         a.extend(["--allowedTools", "Read", "Glob", "Grep"].map(String::from));
     }
     a
@@ -299,6 +329,11 @@ impl AgentAdapter for ClaudeCode {
             a.push("TodoWrite".into());
         } else if cx.builder {
             a.extend(["Read", "Glob", "Grep", "TodoWrite"].map(String::from));
+        } else if cx.reads_checked {
+            // A Clean room chat works only through our tools, which keep the original out of reach.
+            // Refused outright: neither its defaults nor an allow rule added later can open them (#564).
+            a.push("--disallowedTools".into());
+            a.extend(READING_TOOLS.iter().chain(CHANGING_TOOLS).map(|t| t.to_string()));
         }
         a
     }
@@ -313,7 +348,39 @@ impl AgentAdapter for ClaudeCode {
             p.session_id = Some(id.to_string());
         }
         match s("type").as_str() {
+            "system" if s("subtype") == "init" => {
+                let failed = v.get("mcp_servers").and_then(Value::as_array).and_then(|servers| {
+                    servers.iter().find(|server| {
+                        server.get("name").and_then(Value::as_str) == Some(MCP_NAME)
+                            && matches!(server.get("status").and_then(Value::as_str), Some("failed" | "needs-auth"))
+                    })
+                });
+                if let Some(server) = failed {
+                    p.failure = Some(TurnFailure::new(FailureKind::ToolsUnavailable));
+                    let status = server.get("status").and_then(Value::as_str).unwrap_or_default();
+                    out.push(AgentEvent::Error {
+                        message: format!("Craft Anything's tools did not start in Claude Code (server status: {status})."),
+                        remediation: Some(
+                            "Check the Craft Anything CLI and the agent failure log, then start a new build attempt after fixing the tool connection.".into(),
+                        ),
+                        log: None,
+                    });
+                }
+            }
             "assistant" => {
+                if let Some(code) = v.get("error").and_then(Value::as_str) {
+                    let failure = TurnFailure::claude(code);
+                    p.failure = Some(failure);
+                    let why = v.pointer("/message/content").map(content_text).unwrap_or_else(|| code.to_string());
+                    let (message, hint) = claude_code_failure(&why);
+                    let remediation = hint.or_else(|| match failure.kind {
+                        FailureKind::Authentication => self.sign_in_fix(),
+                        FailureKind::Billing => Some("Check the account's credits, plan and spending limit before trying again.".into()),
+                        FailureKind::Configuration => Some("Check the chosen model and Claude Code settings before trying again.".into()),
+                        _ => None,
+                    });
+                    return vec![AgentEvent::Error { message, remediation, log: None }];
+                }
                 for b in v.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default() {
                     match b.get("type").and_then(Value::as_str).unwrap_or_default() {
                         "text" => out.push(AgentEvent::TextDelta { text: b.get("text").and_then(Value::as_str).unwrap_or_default().to_string() }),
@@ -358,6 +425,7 @@ impl AgentAdapter for ClaudeCode {
                         log: None,
                     });
                 } else if v.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+                    p.failure.get_or_insert(TurnFailure::new(FailureKind::Unknown));
                     let why = if s("result").is_empty() { s("subtype") } else { s("result") };
                     let (message, remediation) = claude_code_failure(&why);
                     out.push(AgentEvent::Error { message, remediation, log: None });
@@ -567,6 +635,12 @@ impl AgentAdapter for Codex {
         v.extend(["-c".into(), format!("mcp_servers.{MCP_NAME}.command={}", toml_string(&cx.mcp.command))]);
         let args_toml = format!("[{}]", cx.mcp.args.iter().map(|s| toml_string(s)).collect::<Vec<_>>().join(", "));
         v.extend(["-c".into(), format!("mcp_servers.{MCP_NAME}.args={args_toml}")]);
+        // `codex exec` can't ask, so without this it refuses a tool not marked read-only, such as
+        // rebuild_start, before our server sees the call (#540). Only tools that ask the person
+        // themselves are approved; every other tool keeps the person's own Codex policy.
+        for tool in craft_anything_engine::AGENT_APP_PREAPPROVED_TOOLS {
+            v.extend(["-c".into(), format!("mcp_servers.{MCP_NAME}.tools.{tool}.approval_mode=\"approve\"")]);
+        }
         if let Some(m) = &cx.options.cli_model {
             v.extend(["-m".into(), m.clone()]);
         }
@@ -614,7 +688,9 @@ impl AgentAdapter for Codex {
                     out.push(p.started(&id, &name, item.get("arguments").cloned().unwrap_or(Value::Null)));
                 }
                 let failed = item.get("status").and_then(Value::as_str) == Some("failed") || item.get("error").is_some_and(|e| !e.is_null());
-                let text = item.get("result").or_else(|| item.get("error")).map(|r| r.to_string()).unwrap_or_default();
+                let tool = item.get("tool").and_then(Value::as_str).unwrap_or_default();
+                let ours = item.get("server").and_then(Value::as_str) == Some(MCP_NAME);
+                let text = codex_tool_text(&item, tool, ours);
                 out.push(p.finished(&id, !failed, &text));
             }
             ("item.started", "command_execution") => {
@@ -637,6 +713,30 @@ impl AgentAdapter for Codex {
     }
 }
 
+/// What a finished Codex tool call says. A failed call carries `"result": null` beside its
+/// `error`, which showed as "null" (#540), so null fields are skipped and an error's message is
+/// used as written. Codex's refusal to run one of our tools it can't ask about gets the way out.
+fn codex_tool_text(item: &Value, tool: &str, ours: bool) -> String {
+    let field = |k: &str| item.get(k).filter(|v| !v.is_null());
+    let error = field("error").map(|e| e.get("message").and_then(Value::as_str).map_or_else(|| e.to_string(), str::to_string));
+    let text = match (field("result"), error) {
+        (_, Some(e)) => e,
+        (Some(r), None) => r.to_string(),
+        (None, None) => String::new(),
+    };
+    // Another MCP server's refusal isn't fixed by our setup: it keeps Codex's own words.
+    if ours && text.contains(CODEX_NEEDS_APPROVAL) {
+        // The feed keeps 200 characters of a result, so the fix comes first and fits.
+        return format!(
+            "Codex blocked {tool}: it can't ask for approval here. Fix: run `craft-anything-cli setup --client codex --yes`, then retry. See docs/codex.md."
+        );
+    }
+    text
+}
+
+/// Codex's wording when a tool needs approval and its policy is `never` (#540).
+const CODEX_NEEDS_APPROVAL: &str = "requires approval, but approval policy is never";
+
 /// Gemini CLI (`--output-format stream-json`). Flags are checked against `gemini --help`.
 pub struct GeminiCli;
 
@@ -645,12 +745,23 @@ impl AgentAdapter for GeminiCli {
         &["gemini-cli", "gemini"]
     }
 
+    /// Gemini CLI reads its message from stdin and appends `-p` to it, so a long one can't pass
+    /// Windows' command-line limit, which is 8,191 characters through npm's `gemini.cmd`.
+    fn prompt_on_stdin(&self) -> bool {
+        true
+    }
+
+    fn stdin_text(&self, preamble: &str, prompt: &str) -> String {
+        format!("{preamble}{prompt}")
+    }
+
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
         let mut a = cx.options.args.clone();
         if let Some(m) = &cx.options.cli_model {
             a.extend(["-m".into(), m.clone()]);
         }
-        a.extend(["--output-format".into(), "stream-json".into(), "-p".into(), format!("{}{}", cx.preamble, cx.prompt)]);
+        // An empty `-p` keeps it headless and adds nothing to the message on stdin (see `stdin_text`).
+        a.extend(["--output-format".into(), "stream-json".into(), "-p".into(), String::new()]);
         a
     }
 
