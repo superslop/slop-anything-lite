@@ -148,12 +148,12 @@ Owner: maintainers · Status: in progress
 Review comes before new work while the queue is long, smallest and clean PRs first. A PR is merged
 only when it's green and a maintainer has fully reviewed it, code as well as wording.
 - [ ] Maintainers: protect `main` (PRs required, squash only); the only ruleset covers `release`
-- [ ] Auto mode's delete check is a safety bug that shows up as Mac test failures. It splits a
+- [x] Auto mode's delete check is a safety bug that shows up as Mac test failures. It splits a
       command on spaces, so `rm -rf "C:/x/Game Backup/y"` from a project at `C:/x/Game` goes ahead
       unasked, and it lower-cases paths, so on a Mac or Linux a delete inside a project with
       capitals in its path is refused; `auto_mode_keeps_going_but_never_does_the_dangerous_things`
       fails on a Mac for that. `real_binary_end_to_end_if_present` fails there too, expecting
-      `/bin/ls` to be Linux — in PR #357
+      `/bin/ls` to be Linux: both fixed (#357)
 - [ ] **decision** First-time contributors' CI: GitHub holds their runs for approval, so their PRs
       show no `gate` run (#490 and #413 among them, and #413 holds up #455). Approve each push, or
       change the repository's approval setting
@@ -248,6 +248,8 @@ been run live.
       Windows, macOS and Linux (`LM_STUDIO_SETTINGS` is from memory of its folders, not verified)
 - [ ] See why Bionic or LM Studio can't be picked (#140)
 - [x] Do not select an embedding, ranking or transcription model as a chat backend when a local server has no chat models — claimed: Afloat16, branch bugfix/r5.4-nonchat-model-detection-20261103
+- [x] Recognize specialised model file paths and numeric task-name versions during local chat setup
+      — claimed: Afloat16, branch bugfix/r5.4-model-task-identifiers-20261103
 
 ### R5.5 API-key builds fail in words people can use
 Owner: open · Status: todo
@@ -596,6 +598,9 @@ Owner: open · Status: in progress
 
 ### R3.11 Single-file apps, game files and stand-in backends
 Owner: open · Status: in progress
+- [x] Verify stand-in session cleanup by the original answerer's lifetime rather than polling a
+      released port that another listener may reuse
+      — claimed: Afloat16, branch test/r3.11-standin-session-lifetime-20261103
 - [ ] Stand-in backend: writes that change later reads (recorded answers are replayed as they are)
 - [ ] Tell the builder about the stand-in backend in a website's brief, and start one from a
       recording
@@ -631,6 +636,8 @@ Owner: open · Status: in progress
       backend matches older recordings the same way), redact declared secrets in every kept field
       (names, methods, hosts, versions, timings), count body bytes before text conversion, and
       template only real calendar dates in API paths (#602–#605, by Afloat16)
+- [x] Preserve empty query pairs when matching older stand-in recordings, without treating raw
+      query separators as pairs — claimed: Afloat16, branch `bugfix/r3.13-preserve-empty-query-pairs-20261103`
 
 ---
 
