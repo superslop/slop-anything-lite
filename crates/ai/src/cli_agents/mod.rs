@@ -2333,4 +2333,114 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "generic-cli", "hermes", "maki", "copilot", "echo-agent"]"#
         );
     }
+
+    #[test]
+    fn copilot_defaults_to_local_acp_without_changing_other_agents() {
+        let config =
+            BackendConfig { name: "Copilot".into(), kind: BackendKind::AgentCli, model: "copilot".into(), base_url: None, ssh_host: None, enabled: true };
+        let mut spec = CliSpec::new(config, BackendOptions::default(), false, None);
+        assert!(acp_for(&spec).is_some());
+        assert_eq!(program_for("copilot"), "copilot");
+        assert_eq!(display_for("copilot"), "GitHub Copilot");
+        spec.options.acp = Some(false);
+        assert!(acp_for(&spec).is_none());
+        spec.options.acp = Some(true);
+        spec.config.ssh_host = Some("build-machine".into());
+        assert!(acp_for(&spec).is_none());
+        spec.config.ssh_host = None;
+        spec.options.acp = None;
+        spec.config.model = "gemini-cli".into();
+        assert!(acp_for(&spec).is_none());
+        spec.options.acp = Some(true);
+        assert!(acp_for(&spec).is_some());
+        spec.question = true;
+        assert!(acp_for(&spec).is_none());
+        spec.config.model = "copilot".into();
+        assert!(acp_for(&spec).is_some());
+    }
+
+    #[test]
+    fn mcp_target_handoff_is_bounded_and_keeps_the_active_target_last() {
+        use craft_anything_engine::{TargetKind, target::TargetContext};
+        let directory = tempfile::tempdir().unwrap();
+        for count in [0, 128, 129, 130] {
+            let config =
+                BackendConfig { name: "Test".into(), kind: BackendKind::AgentCli, model: "copilot".into(), base_url: None, ssh_host: None, enabled: true };
+            let mut spec = CliSpec::new(config, BackendOptions::default(), false, None);
+            spec.targets = (0..count)
+                .map(|index| TargetContext {
+                    path: directory.path().join(format!("target-{index}")),
+                    sha256: format!("{index:064x}"),
+                    kind: TargetKind::Elf,
+                    raw: None,
+                })
+                .collect();
+            let command = mcp_for(&spec, false);
+            let shared: Vec<TargetContext> =
+                command.args.windows(2).filter(|pair| pair[0] == "--target").map(|pair| serde_json::from_str(&pair[1]).unwrap()).collect();
+            assert_eq!(shared.len(), count.min(128));
+            assert_eq!(
+                shared.iter().map(|target| &target.path).collect::<Vec<_>>(),
+                spec.targets.iter().skip(count.saturating_sub(128)).map(|target| &target.path).collect::<Vec<_>>()
+            );
+            assert_eq!(shared.last().map(|target| &target.path), spec.targets.last().map(|target| &target.path));
+            assert!(!mcp_for(&spec, true).args.iter().any(|argument| argument == "--target"));
+        }
+    }
+
+    #[test]
+    fn copilot_never_falls_back_to_native_or_ssh_execution() {
+        for host in [None, Some("build-machine".to_string())] {
+            let config =
+                BackendConfig { name: "Copilot".into(), kind: BackendKind::AgentCli, model: "copilot".into(), base_url: None, ssh_host: host, enabled: true };
+            let options = BackendOptions { acp: Some(false), command: Some("no-such-copilot-xyz".into()), ..Default::default() };
+            let spec = CliSpec::new(config, options, false, None);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let state = RunState { session: Arc::default(), verified: Arc::default(), lost: Arc::default(), failure: Arc::default() };
+            let done = run_cli(&spec, "hello", false, &sender, &Stop::default(), &state);
+            let mut output: Vec<_> = receiver.try_iter().collect();
+            output.push(done);
+            assert!(matches!(&output[..], [AgentEvent::Error { message, .. }, AgentEvent::TurnDone { .. }] if message.contains("local ACP")));
+        }
+    }
+
+    #[test]
+    fn acp_only_refusals_use_the_registered_adapters_sign_in_guidance() {
+        struct AcpOnlyAgent(Option<&'static str>);
+        impl AgentAdapter for AcpOnlyAgent {
+            fn ids(&self) -> &'static [&'static str] {
+                &["test-acp-agent"]
+            }
+            fn args(&self, _context: &ArgsCx) -> Vec<String> {
+                Vec::new()
+            }
+            fn requires_acp(&self) -> bool {
+                true
+            }
+            fn sign_in_fix(&self) -> Option<String> {
+                self.0.map(str::to_string)
+            }
+        }
+        for guidance in [None, Some("Use test-agent sign-in.")] {
+            let config = BackendConfig {
+                name: "Test agent".into(),
+                kind: BackendKind::AgentCli,
+                model: "test-acp-agent".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            };
+            let mut spec = CliSpec::new(config, BackendOptions::default(), false, None);
+            spec.adapters.register(Arc::new(AcpOnlyAgent(guidance)));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let state = RunState { session: Arc::default(), verified: Arc::default(), lost: Arc::default(), failure: Arc::default() };
+            let done = run_cli(&spec, "hello", false, &sender, &Stop::default(), &state);
+            let mut output: Vec<_> = receiver.try_iter().collect();
+            output.push(done);
+            let [AgentEvent::Error { remediation: Some(fix), .. }, AgentEvent::TurnDone { .. }] = output.as_slice() else { panic!("{output:?}") };
+            assert!(fix.contains("test-acp-agent") && fix.contains("remove the SSH host") && fix.contains("do not disable ACP"), "{fix}");
+            assert!(!fix.to_lowercase().contains("copilot"), "{fix}");
+            assert_eq!(fix.contains("Use test-agent sign-in."), guidance.is_some());
+        }
+    }
 }
