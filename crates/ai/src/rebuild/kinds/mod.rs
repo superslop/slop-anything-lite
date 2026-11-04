@@ -6,6 +6,7 @@
 mod app;
 mod game;
 pub mod mechanics;
+pub mod own;
 pub mod plugin_check;
 pub mod runs;
 pub mod screenshot;
@@ -184,11 +185,15 @@ impl Worker {
             .into_iter()
             .filter(|c| c.kinds.is_empty() || c.kinds.iter().any(|k| k == kind.id()))
             .map(|check| Box::new(plugin_check::PluginJudge { check, kind: kind.id() }) as Box<dyn Check>);
+        // A person's own project is checked by its own build and tests (upstream);
+        // that replaces the kind's checks, so it takes precedence over the Slop Gate.
         // Slop mode (this fork): a website build is judged by the Slop Gate instead of
         // likeness. For a website target the gate wraps the visual check; for a
         // request-only build it follows the kind's own checks (the build check), which
         // stop the round first when they fail. Faithful mode is upstream's list as-is.
-        let checks: Vec<Box<dyn Check>> = if !self.faithful && kind.id() == website::WebsiteKind::ID {
+        let checks: Vec<Box<dyn Check>> = if ws.manifest.own_project() {
+            own::checks()
+        } else if !self.faithful && kind.id() == website::WebsiteKind::ID {
             if matches!(ws.manifest.target, TargetRef::Website { .. }) {
                 vec![Box::new(super::slop::SlopGateCheck { visual: true }) as Box<dyn Check>]
             } else {
@@ -250,6 +255,8 @@ impl Check for BuildCheck {
     }
     fn run(&self, cx: &mut CheckCx) -> Result<CheckResult, ToolError> {
         let (passed, note) = build_check(&cx.ws.app_dir(), cx.ws.app_place(), &cx.ws.manifest.stack, cx.editor(), cx.stop());
+        // #736: a failed build of an empty app/ says first that nothing was written.
+        let note = if !passed && app_is_empty(cx.ws) { format!("{} {note}", no_files_yet(cx.ws)) } else { note };
         Ok(CheckResult::new(self.id(), cx.round, passed, note))
     }
 }

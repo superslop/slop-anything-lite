@@ -417,9 +417,23 @@ pub struct Manifest {
     /// that picks this up only needs to check: nothing is left to build.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaiting_check: bool,
+    /// Checks in a row, across runs, that found the build not working (it didn't build or serve).
+    /// A run stops when this reaches the limit; a new request from the person starts it again.
+    /// Kept in the project so "Try again" can't restart the count.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub not_working_checks: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Manifest {
+    /// The person's own project: their files are the app, edited in place, with nothing to recreate.
+    pub fn own_project(&self) -> bool {
+        self.app_in_root && self.target == TargetRef::None
+    }
+
     fn new(name: &str, request: &str, target: TargetRef) -> Manifest {
         let now = now_ms();
         Manifest {
@@ -444,6 +458,7 @@ impl Manifest {
             builder: None,
             questions: None,
             awaiting_check: false,
+            not_working_checks: 0,
         }
     }
 
