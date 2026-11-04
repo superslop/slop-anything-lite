@@ -2586,6 +2586,22 @@ fn a_project_started_in_a_picked_folder_stays_in_the_list() {
 }
 
 #[test]
+fn a_project_edited_in_place_keeps_what_its_files_are_built_with() {
+    use craft_anything_engine::workspace::ExistingFiles::{Edit, StartFrom};
+    let first = |file: &str, request: &str, existing| {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(file), "").unwrap();
+        let ws = Workspace::create_at(d.path(), "Mine", request, TargetRef::None, Some(existing)).unwrap();
+        project::first_stack(&KindRegistry::built_in(), &ws, false)
+    };
+    assert_eq!(first("project.godot", "Fix my game's jump", Edit), Some("Godot"), "not the Unity its words would get");
+    assert_eq!(first("requirements.txt", "Add a settings page", Edit), Some("Python"), "not the app kind's default");
+    assert_eq!(first("requirements.txt", "Move it to Electron", Edit), Some("Electron"), "the person's words come first");
+    assert_eq!(first("notes.md", "Fix my game's jump", Edit), Some("Unity"), "nothing to read: as for a new project");
+    assert_eq!(first("project.godot", "Fix my game's jump", StartFrom), Some("Unity"), "material to start from doesn't decide");
+}
+
+#[test]
 fn the_extractors_transcript_is_one_of_craft_anythings_own_files() {
     assert!(craft_anything_engine::workspace::OWN_NAMES.contains(&brief::EXTRACT_TRANSCRIPT), "a picked folder with this name would be overwritten");
 }
@@ -2814,4 +2830,12 @@ fn the_builders_conversation_travels_with_the_project() {
     w.keep_session(&ws, &adapter);
     let said: Vec<String> = rx.try_iter().filter_map(|e| if let RunEvent::Agent(AgentEvent::Status { text }) = e { Some(text) } else { None }).collect();
     assert!(said.iter().any(|t| t.contains("Couldn't keep a copy")), "{said:?}");
+}
+
+/// A coding agent that was signed in once and no longer is says so, rather than "isn't signed in",
+/// which reads as if the person never did.
+#[test]
+fn a_sign_in_that_stopped_working_is_called_that() {
+    assert_eq!(not_signed_in("claude-code", false), "Claude Code isn't signed in on this computer.");
+    assert_eq!(not_signed_in("claude-code", true), "Claude Code's sign-in on this computer has expired or was signed out.");
 }
