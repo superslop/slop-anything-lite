@@ -165,6 +165,11 @@ pub trait AgentAdapter: Send + Sync {
     fn check_tool_server(&self, _stop: &CancelToken) -> Result<(), ToolError> {
         Ok(())
     }
+    /// An environment variable that hands a local native run our tool server, for an agent that
+    /// takes it from its environment rather than its arguments.
+    fn mcp_env(&self, _mcp: &McpCommand) -> Result<Option<(&'static str, String)>, ToolError> {
+        Ok(None)
+    }
     /// The file in which this computer keeps the agent's saved session `id`, so the project can
     /// keep a copy that travels with it. `None`: it keeps none we can copy, or not here.
     fn session_file(&self, _id: &str) -> Option<std::path::PathBuf> {
@@ -601,11 +606,7 @@ fn claude_config_dir() -> Option<std::path::PathBuf> {
     set.or_else(flatpak_claude_dir).or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
 }
 
-/// Whether this app runs in a Flatpak sandbox (it sets `FLATPAK_ID` and makes `/.flatpak-info`).
-pub fn in_flatpak() -> bool {
-    static IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *IN.get_or_init(|| std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists())
-}
+pub use craft_anything_platform::in_flatpak;
 
 /// Where Claude Code keeps its conversations when we start it under a Flatpak and the person
 /// hasn't chosen a folder: its own is `~/.claude`, which the sandbox only lets us read, so a
