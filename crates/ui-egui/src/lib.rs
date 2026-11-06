@@ -7,6 +7,7 @@
 //! holding it never freezes a frame; the last snapshot ([`SessionView`]) is shown meanwhile.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod approvals;
 pub mod builders;
 pub mod chat;
 pub mod demo;
@@ -974,6 +975,7 @@ impl CraftApp {
                 }
                 self.toast(tr("Called done. A new message carries on from here."), false);
             }
+            ("project_approvals_set", r) => self.approval_set(r),
             ("project_questions_set", Ok(v)) => {
                 // What was saved (the person's other changes on disk come along).
                 if let Some(ws) = self.workspace.as_mut().filter(|w| v["project"].as_str().is_some_and(|p| w.root == std::path::Path::new(p))) {
@@ -1248,7 +1250,12 @@ impl CraftApp {
         if self.state.backend.is_some() && self.conversation.is_none() {
             match self.hub.start(self.state.backend.as_deref(), self.beginner()) {
                 Ok(c) => self.conversation = Some(c),
-                Err(e) => self.state.chat.push(ChatItem::Error { message: e.message, remediation: e.remediation, log: None }),
+                // The AI that was picked didn't start (it may be turned off), so the error is the
+                // answer; an AI is set up, so the built-in engines' "no AI brain" line would be wrong.
+                Err(e) => {
+                    self.state.chat.push(ChatItem::Error { message: e.message, remediation: e.remediation, log: None });
+                    return;
+                }
             }
         }
         if let Some(c) = self.conversation.as_mut() {
@@ -1764,9 +1771,7 @@ impl CraftApp {
         menu::update(self, &ctx);
         let t = theme::Tokens::get(&ctx);
         // The title bar is on every screen: it is how the window moves, resizes and closes.
-        egui::Panel::top("titlebar").exact_size(titlebar::HEIGHT).frame(egui::Frame::new().fill(t.chrome)).show(ui, |ui| {
-            guard_ui(ui, "title bar", |ui| titlebar::show(self, ui));
-        });
+        titlebar::bar(self, ui);
         self.stuck_banner(ui, &ctx);
         if !self.settings.first_run_done {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(t.canvas)).show(ui, |ui| guard_ui(ui, "first run", |ui| first_run::show(self, ui)));
@@ -2013,6 +2018,7 @@ impl eframe::App for CraftApp {
         for j in self.jobs.running() {
             j.cancel.cancel();
         }
+        craft_anything_engine::tools::deep::stop_analyses(std::time::Duration::from_secs(12));
         // A change not written yet (or one being written as the window closed) is written now.
         if self.persist && (self.settings_dirty || self.save_due.is_some() || self.saving.is_some()) {
             let saved = if let Some(mut session) = self.engine.try_session() {

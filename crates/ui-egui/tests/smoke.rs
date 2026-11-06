@@ -1,5 +1,6 @@
 //! UI smoke tests: every screen draws, the main controls work, and nothing blocks or panics.
 
+use craft_anything_ai::{BackendConfig, BackendKind};
 use craft_anything_engine::{Mode, TargetKind};
 use craft_anything_ui_egui::state::{ChatItem, FirstRunStep, RailKind, Screen};
 use craft_anything_ui_egui::{CraftApp, demo};
@@ -31,12 +32,15 @@ fn wait(h: &mut Harness<'static, CraftApp>, done: impl Fn(&CraftApp) -> bool) ->
     false
 }
 
+/// First run goes from the welcome to the AI step, with the window controls there throughout.
 #[test]
 fn first_run_walks_through_four_screens() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, false)));
     h.run_steps(3);
-    // The window controls are there from the first screen (the native frame is off).
-    h.get_by_label("Close");
+    // The window controls are there from the first screen (the native frame is off; macOS draws its own).
+    if !craft_anything_ui_egui::titlebar::NATIVE_FRAME {
+        h.get_by_label("Close");
+    }
     h.get_by_label("I'm new to this").click();
     h.run_steps(3);
     assert_eq!(h.state().state.first_run, FirstRunStep::Brain);
@@ -712,6 +716,76 @@ fn the_builders_questions_can_come_to_the_person_for_one_project() {
 }
 
 #[test]
+fn approvals_are_chosen_from_the_prompt_box_and_its_menu() {
+    use craft_anything_engine::workspace::{ActionKind, Approval, TargetRef, Workspace};
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+    let root = ws.root.clone();
+    let mut h = harness(move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.workspace = Some(ws);
+        a.state.screen = Screen::Project;
+        a
+    });
+    h.run_steps(2);
+    let saved = |kind| Workspace::open(&root).unwrap().manifest.approvals.get(&kind).copied();
+    let feed_before = h.state().state.feed.len();
+    // /approvals changes one kind and sends nothing to the builder.
+    h.state_mut().state.project_input = "/approvals push ask".into();
+    h.run_steps(1);
+    h.get_by_label("Send (Enter)").click();
+    assert!(wait(&mut h, |_| saved(ActionKind::Publish) == Some(Approval::Ask)), "saved in the project");
+    assert!(h.state().state.project_input.is_empty(), "the box is cleared");
+    assert_eq!(h.state().state.feed.len(), feed_before, "nothing joined the build's conversation");
+    assert!(!h.state().runs.is_busy(&root), "no build started");
+    // One it can't read stays in the box to be fixed.
+    h.state_mut().state.project_input = "/approvals push".into();
+    h.run_steps(1);
+    h.get_by_label("Send (Enter)").click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.project_input, "/approvals push");
+    h.state_mut().state.project_input.clear();
+    // The messages those left sit over the row under the box, where a click lands.
+    h.state_mut().state.toasts.clear();
+    h.run_steps(2);
+    // The menu under the box: one row per kind, and a click saves it.
+    h.get_by_label("Approvals").click();
+    h.run_steps(2);
+    assert!(egui::Popup::is_id_open(&h.ctx, egui::Id::new("project-approvals")), "the menu opened");
+    h.get_by_label("Reading the web");
+    h.get_by_label("Pushing and publishing");
+    let refuse = h.get_all_by_label("Refuse").count();
+    assert_eq!(refuse, craft_anything_engine::workspace::ACTION_KINDS.len(), "a switch for every kind");
+    h.get_all_by_label("Refuse").next().unwrap().click();
+    assert!(wait(&mut h, |_| saved(ActionKind::Web) == Some(Approval::Refuse)), "the first row is the web");
+    assert_eq!(saved(ActionKind::Publish), Some(Approval::Ask), "the other kinds keep theirs");
+}
+
+#[test]
+fn an_approval_that_cant_be_saved_isnt_shown_as_chosen() {
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+    let file = ws.root.join("craft.json");
+    let mut h = harness(move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.workspace = Some(ws);
+        a.state.screen = Screen::Project;
+        a
+    });
+    h.run_steps(2);
+    // A newer Craft Anything saved it meanwhile: this one only reads it, so the choice is refused.
+    let newer = std::fs::read_to_string(&file).unwrap().replacen("\"version\": 3", "\"version\": 99", 1);
+    assert!(newer.contains("\"version\": 99"));
+    std::fs::write(&file, newer).unwrap();
+    h.state_mut().state.project_input = "/approvals push allow".into();
+    h.run_steps(1);
+    h.get_by_label("Send (Enter)").click();
+    assert!(wait(&mut h, |a| a.state.toasts.iter().any(|(t, _)| t.starts_with("Couldn't change the approvals:"))), "says it wasn't saved");
+    assert!(h.state().workspace.as_ref().unwrap().manifest.approvals.is_empty(), "the menu shows what's kept, not what was asked");
+}
+
+#[test]
 fn a_question_about_the_build_is_answered_without_building() {
     use craft_anything_engine::workspace::{TargetRef, Workspace};
     let d = tempfile::tempdir().unwrap();
@@ -893,6 +967,43 @@ fn asking_without_ai_runs_the_built_in_engines() {
     h.get_by_label("Add a brain").click();
     h.run_steps(2);
     assert!(h.state().state.settings_open);
+}
+
+/// An AI that is turned off, picked in the titlebar: the chat says which one and that it is off. The
+/// built-in engines don't answer as though none were set up — that is the test above, where the
+/// backend is None.
+#[test]
+fn asking_an_ai_that_is_turned_off_says_so_instead_of_looking_alone() {
+    let mut h = harness(|| {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        demo::deep(&mut a);
+        for (name, enabled) in [("On", true), ("Off", false)] {
+            let config = BackendConfig {
+                name: name.into(),
+                kind: BackendKind::OpenaiCompatible,
+                model: "m".into(),
+                base_url: Some("http://127.0.0.1:9/v1".into()),
+                ssh_host: None,
+                enabled,
+            };
+            a.hub.add_backend(config, None).unwrap();
+        }
+        a.state.backend = Some("Off".into());
+        a.state.screen = Screen::Ask;
+        a
+    });
+    h.run_steps(3);
+    h.state_mut().send("What does this program do?");
+    h.run_steps(6);
+    let (said, add) = {
+        let chat = &h.state().state.chat;
+        (
+            chat.iter().any(|i| matches!(i, ChatItem::Error { message, .. } if message.contains("Off") && message.contains("turned off"))),
+            chat.iter().any(|i| matches!(i, ChatItem::AddBrain)),
+        )
+    };
+    assert!(said, "the chat says which AI is turned off");
+    assert!(!add, "an AI is set up, so there is nothing to add");
 }
 
 #[test]
@@ -1445,6 +1556,37 @@ fn zoom_stays_between_half_and_double() {
     h.run_steps(3);
     assert_eq!(h.ctx.zoom_factor(), 0.5);
     assert_eq!(craft_anything_ui_egui::bounded_zoom(f32::NAN), 1.0);
+}
+
+/// macOS keeps its own window buttons beside the title bar, and they don't zoom, so the bar
+/// doesn't either: at 50%, 100% and 150% its controls keep their size and place on screen (zoomed
+/// points times the zoom), while the body below does zoom.
+#[cfg(target_os = "macos")]
+#[test]
+fn title_bar_keeps_its_size_when_zoomed() {
+    let on_screen = |zoom: f32| {
+        let mut h = harness_sized(egui::vec2(1360.0, 600.0), || demo::app(demo::engine(Mode::Experienced, true)));
+        h.ctx.set_zoom_factor(zoom);
+        h.run_steps(4);
+        // The topmost node with the label: Settings and Advanced appear in the bar first.
+        let rect = |label: &str| {
+            let r = h.get_all_by_label(label).map(|n| n.rect()).min_by(|a, b| a.top().total_cmp(&b.top())).unwrap();
+            egui::Rect::from_min_max(r.min * zoom, r.max * zoom)
+        };
+        (rect("Settings"), rect("Advanced"), rect("Filter"))
+    };
+    let (settings, advanced, filter) = on_screen(1.0);
+    // The bar is the system title bar's height, and its controls sit centred in it.
+    assert!((settings.center().y - 16.0).abs() <= 1.0, "settings button at {settings:?}");
+    for zoom in [0.5, 1.5] {
+        let (s, a, f) = on_screen(zoom);
+        for (name, at_100, now) in [("Settings", settings, s), ("Advanced", advanced, a)] {
+            let moved = (now.min - at_100.min).length().max((now.max - at_100.max).length());
+            assert!(moved <= 1.0, "{name} moved {moved} pt at {zoom}x: {at_100:?} → {now:?}");
+        }
+        let grew = f.height() / filter.height();
+        assert!((grew - zoom).abs() < 0.15, "the body should zoom: Filter grew {grew}x at {zoom}x");
+    }
 }
 
 #[test]
@@ -2490,6 +2632,31 @@ fn only_the_claude_desktop_app_is_named_when_nothing_can_build() {
     h.run_steps(2);
     h.get_by_label("No coding agent was found on this computer yet.");
     h.get_by_label("The Claude desktop app is installed, but building needs Claude Code, its separate command-line tool. Install Claude Code, sign in to it once in a terminal, then look again.");
+
+    // Agents suggested from `~/.ssh/config` aren't checked, so the hint stays (review of #781).
+    use craft_anything_ai::{BackendConfig, Detected};
+    let remote = |name: &str| Detected {
+        suggestion: BackendConfig {
+            name: name.into(),
+            kind: craft_anything_ai::BackendKind::AgentCli,
+            model: "claude-code".into(),
+            base_url: None,
+            ssh_host: Some("box".into()),
+            enabled: true,
+        },
+        reason: "From ~/.ssh/config".into(),
+        needs_key: false,
+    };
+    h.state_mut().detected = Some(vec![remote("Claude Code on box")]);
+    h.run_steps(2);
+    h.get_by_label("The Claude desktop app is installed, but building needs Claude Code, its separate command-line tool. Install Claude Code, sign in to it once in a terminal, then look again.");
+    // An agent found on this computer can build, so the hint goes.
+    let mut local = remote("Codex");
+    local.suggestion.ssh_host = None;
+    local.suggestion.model = "codex".into();
+    h.state_mut().detected = Some(vec![remote("Claude Code on box"), local]);
+    h.run_steps(2);
+    assert!(h.query_by_label("The Claude desktop app is installed, but building needs Claude Code, its separate command-line tool. Install Claude Code, sign in to it once in a terminal, then look again.").is_none());
 }
 
 #[test]

@@ -30,6 +30,13 @@ whatever the PR's head was by then; its author had pushed two more commits meanw
 reached `main` with code neither CI nor review had seen. Merge with `--match-head-commit` set to
 the commit the green run tested (`gh run view <id> --json headSha`), never to a head read later.
 
+**Squash messages that lost their co-authors.** A batch of replays was merged from a script that
+kept each message on one line and turned `\n` back into line breaks. A shell heredoc had collapsed
+that step into one that did nothing, and `printf` broke other lines early, so a dozen squash
+commits reached `main` with `\n\nCo-authored-by:` as plain text or with the line cut off, and
+GitHub credited nobody. Write a squash message to a file with real line breaks, and read the first
+commit a new merge script makes (`git log -1 --format=%B`) before it does a second.
+
 **A squash commit names the wrong PR number.** The subject was written as "(#12)" before the PR
 existed; it became #11. Take the number from `gh pr create`'s output (`${URL##*/}`) and use it.
 
@@ -62,6 +69,9 @@ Don't close or rewrite other people's work without asking.
 comments were acted on; the fixes went to its branch and the threads were answered "Fixed", while
 `main` had the code without them. Read `gh pr view --json state,headRefOid` before pushing to a PR's
 branch, and land anything late in a new PR from `main`.
+It happened again with the check in place: `gh pr view 1022 --json state -q .state && … git push`
+printed `MERGED` and went on, because printing a state isn't failing. The check has to stop the
+command: `test "$(gh pr view <n> --json state -q .state)" = OPEN && …`.
 
 **A report checked against main, not the release it ran.** #736 (a build looping on an empty `app/`)
 was read against main, where the stop after two unchanged turns already existed, so it looked fixed.
@@ -70,6 +80,15 @@ merged the day after it shipped. Before calling a report fixed or still open, fi
 names (`git merge-base --is-ancestor <fix> <release tag>`), and check the message text it quotes.
 
 ## Tests
+
+**An isolated PATH still assumed system utilities lived in `/bin`.** The remote setup fixture
+linked `mkdir`, `chmod` and `mv` there, so a host with utilities elsewhere got dangling links.
+Resolve fixture utilities on the host, make their paths absolute, then populate the private PATH.
+
+**Python compilation reused stale bytecode after a fast edit.** The new-project toolchain probe
+changed valid Python to a syntax error within the same mtime second. `compileall` skipped it and
+exited zero; the screenshot run then failed instead. Use `compileall -f` for a build check, and
+hold the valid and broken fixture revisions at the same timestamp in the real-Python regression.
 
 **A test started a real download on a contributor's machine.** A test called `engines_install` for
 Unity; a later change made that download the vendor installer and open it on Windows. It also
@@ -150,6 +169,16 @@ call it and make them `wait` for the result, not `run_steps(n)`.
 
 ## Building and running
 
+**A runner's PID isn't the window owner's.** `go run` starts a compiled child, so picturing the
+runner missed the app (or a name fallback found another app). Search only the launched process
+and its descendants, and read the UI tree from the same PID that supplied the picture.
+
+**Runtime capture passed relative paths to a tool that needs absolute ones.** With a relative
+project placement, the selected virtualenv interpreter and artifact paths stayed relative;
+PATH lookup can return a relative path too. Resolve workspace paths against the process's
+current directory, look up only bare program names, and make the result absolute without
+dereferencing the virtualenv symlink. Test the generated capture request without opening a GUI.
+
 **A model catalogue queried in the wrong project.** OpenCode V2's raw `api get /api/model` does
 not reliably select the invoking CLI's directory. Use the `model.list` operation with an explicit
 `location[directory]` parameter, and test that the returned Location matches it. Over SSH,
@@ -170,6 +199,12 @@ supervisor thread; the window-capture tool returned and the CLI exited before th
 the program it opened stayed open (and held the shell's pipe, so the command never returned). When
 the caller may exit next, use `kill_and_wait`, and check after a live run that nothing was left
 running.
+
+**A console held open by a program started next door.** On Windows Server 2022 opening a
+pseudoconsole briefly makes inheritable handles (a Unix terminal too, until it's made close-on-exec),
+so a program another thread started at that moment kept the console open until it ended, and closing
+a console with programs still attached hung its host. Program starts and console or terminal opens
+take `process::STARTING`; end a console's process tree before closing it.
 
 **The newest program isn't the app.** Play started the newest executable in `target/`; a
 workspace that builds an app and its CLI started the CLI, which printed help and quit with no
@@ -258,6 +293,14 @@ upstream providers, and a provider without tool calling answered 400 "Provider r
 (#369), which said nothing the person could act on. For a service that routes, say in the request
 what the provider must support (`provider.require_parameters` for tools), and show the provider's
 own reason when it still fails (#542).
+
+**A refusal that names a person nobody asks.** Auto mode refused `git push` with "never …
+without the person", but never showed a card, so the person's "yes, push it" in the prompt box
+reached only the builder, which retried and was refused again, five times. Its rule matched
+`gh repo` anywhere, so `gh repo view` was "publishing" too, and "always" on `cd app && npm i` was
+kept as `bash:cd`, which would have let `cd app && git push` through. A refusal says how the
+person can allow it, and a way to allow it exists; read commands word by word; remember a
+dangerous kind whole, never by a command's first word.
 
 **A crash that no code can report.** Three Windows tickets (#33, #104, #74) said the app "does
 nothing": a graphics driver crashed natively as the window opened, so no dialog, panic hook or log
@@ -416,6 +459,14 @@ navigation vanished from the run's network capture. Only the code that owns a ru
 drains its event queue; steps leave events where they are, and the run keeps them all, tagged
 with the step they arrived in.
 
+**Exclusive creation left a permission window.** Opening a private temporary file with default
+permissions could let another process retain a readable descriptor before a later chmod. Set
+mode 0600 in the first Unix open for private files. Temporary names must also stay short and
+independent of the destination name: adding a prefix and suffix can exceed the component limit
+even when the destination name is valid. Keep the temporary file in the destination directory,
+but exclude the destination component before creating a candidate, including case and trailing
+dot/space aliases. Probe a supported long name in tests instead of assuming a fixed filename limit.
+
 **Two writers to one file.** The app and the rebuild run both wrote `feed.json`. Give each persisted
 file one owner; when another writer is unavoidable (an answer given from the CLI while a run is
 going), merge what's on disk before saving instead of overwriting it.
@@ -568,6 +619,11 @@ field what it counts, and test each producer with the case where they differ (he
 Update STATUS, the roadmap and generated docs (`cargo xtask tools`, `cargo xtask schemas`) in the
 same PR as the change.
 
+**A tool's title is a UI string.** A PR that added an engine tool and no UI passed every check run
+for it locally, and CI's `cargo xtask i18n-coverage` failed: the app shows tool titles, so each
+needs a translation in every catalog. Run `cargo xtask i18n-coverage` for any PR that adds a tool
+or changes a title, not only for UI changes.
+
 **A second lock in one statement.** `CliSpec { deep: !engine.session().clean_room(), logs: engine.session().config_dir(), … }`
 looked like two quick reads, but an unbound guard lives to the end of the statement, so the second
 waited on the first forever. Every build froze after studying its target while the card calmly
@@ -613,6 +669,15 @@ API answers, then also ran on recorded scripts: `this.token=t` became `[dropped]
 broke, and "Basic Membership" lost a word. It also tested whole tokens, so a secret inside a URL or
 after `ref=` passed. Test a scrubber on what must survive as well as what must go, and on each
 kind of content it can receive.
+
+**Response metadata that fills a replay limit.** Comparing stored HTTP headers literally kept
+equivalent polls apart: names ignore case, and only values for the same name retain order.
+Compare that way without rewriting the saved headers. Unavailable 304 samples still prove which
+request lacked a cached body. At capacity, replace one only with a usable response for the same
+path, query and request key, then append it in recording order. Keep other requests' evidence,
+count the displaced sample, and do not replace anything with a body refused by a size or secret
+check. Compare complete samples before charging retained bytes, so repeats need no refund. Test an
+exact total-body limit and one with room remaining, preserving the unavailable 304 and remaining budget.
 
 **A strict tool that sent an AI off to write its own.** `game_pak_extract` refused an output
 whose folder didn't exist and took one file per call; the extractor model hit that twice, then
@@ -701,6 +766,10 @@ command that then wrote and ran a script: 10 minutes lost. Write the script with
 tool and run only `python -I <file>`.
 And twice more in one night, each time a `python -I - <<'X'` with an empty body typed as a
 throwaway step in a longer command. There is no safe use of `python -` here: never type it.
+And again as the first step of a `sed` edit (`python -I - 2>/dev/null; sed …`): the command sat
+for two minutes and the edit after it never ran. Make an edit with the editor tool, not a shell
+line. The same session typed it once more, with `</dev/null` added, and that hung too: the habit
+is the problem, not the input. Every Python step names a script file.
 
 **A search that ran no search.** `timeout 40 find … 2>/dev/null` on a Mac: there's no `timeout` there,
 the error went to `/dev/null`, and the empty result read as "no such files on this computer". Don't
@@ -782,3 +851,9 @@ with a multi-megabyte line, not a short one.
 body, so its second copy was rejected before it could be discarded as a duplicate. Apply aggregate
 budgets only to distinct bodies actually retained. When a budget removes a body, preserve unavailable
 cached 304 responses and deduplicate identical omitted samples.
+
+**Two worktrees shared build artifacts during conflict checks.** Concurrent Cargo checks of
+different branches reused the same package output path and one saw the other branch's engine.
+Give every worktree its own `CARGO_TARGET_DIR`, even when one agent manages both. Cleaning
+the shared engine cache then removed 11.6 GiB of compiled artifacts: avoid shared-cache
+cleanup as a recovery shortcut; use an isolated target directory for further verification.

@@ -417,7 +417,7 @@ impl ChatStream {
         // Some servers say "stop" for tool calls. A limit or refusal must still prevent execution.
         let stop = if has_calls && stop == StopReason::EndTurn { StopReason::ToolUse } else { stop };
         let model = if self.model.is_empty() { fallback_model.to_string() } else { self.model };
-        Ok(TurnResult { message: Msg { role: Speaker::Assistant, blocks }, stop, usage: self.usage, model })
+        Ok(TurnResult { message: Msg { role: Speaker::Assistant, blocks }, stop, usage: self.usage, model, follow_up: None })
     }
 }
 
@@ -543,12 +543,14 @@ fn json_action(text: &str) -> Option<ReactStep> {
 /// Every fence must be a complete `json` (or unlabelled) call, and nothing but blank lines may
 /// follow the last one; anything else (other code, a `~~~` fence, a fence inside a fence, an
 /// unclosed fence, words after the call, a JSON object quoted inline) means the reply is text,
-/// as before. So do the text protocol's own markers in the words (a final answer that ends in an
-/// example is still the answer); inside a call's arguments they're only content.
-fn fenced_calls(text: &str) -> Option<Vec<(String, Value)>> {
+/// as before. Protocol markers before the first call keep the reply as text; after a call they
+/// require a retry even if another fence follows (it could be an example after a final answer).
+/// Inside a call's arguments they're only content.
+fn parse_fenced_calls(text: &str) -> Option<(Vec<(String, Value)>, bool)> {
     let mut calls = Vec::new();
     let mut lines = text.lines();
     let mut words_after = false;
+    let mut protocol_after = false;
     while let Some(line) = lines.next() {
         let opening = line.trim();
         // Anything in a tilde fence is an example, whatever it holds.
@@ -558,7 +560,11 @@ fn fenced_calls(text: &str) -> Option<Vec<(String, Value)>> {
         let length = opening.bytes().take_while(|byte| *byte == b'`').count();
         if length < 3 {
             if ["Final Answer:", "Action:"].into_iter().any(|marker| line.contains(marker)) {
-                return None;
+                if calls.is_empty() {
+                    return None;
+                }
+                // A later fence may be an example after a final answer, not another call.
+                protocol_after = true;
             }
             words_after |= !opening.is_empty() && !calls.is_empty();
             continue;
@@ -585,7 +591,13 @@ fn fenced_calls(text: &str) -> Option<Vec<(String, Value)>> {
         calls.push((tool, input));
         words_after = false;
     }
-    (!calls.is_empty() && !words_after).then_some(calls)
+    (!calls.is_empty()).then_some((calls, words_after || protocol_after))
+}
+
+/// Returns fenced calls only when no nonblank text follows the final call.
+fn fenced_calls(text: &str) -> Option<Vec<(String, Value)>> {
+    let (calls, words_after) = parse_fenced_calls(text)?;
+    (!words_after).then_some(calls)
 }
 
 /// The first balanced `{…}` in `s`, parsed.
@@ -639,6 +651,14 @@ fn react_postprocess(r: &mut TurnResult, tools: &[ToolDef], react: bool) {
         r.stop = StopReason::ToolUse;
         return;
     }
+    if !from_json
+        && let Some((calls, true)) = parse_fenced_calls(&text)
+        && calls.iter().all(|(tool, _)| offered(tool))
+    {
+        r.follow_up = Some("The fenced tool call in your previous response was not run because text followed the closing fence. Send the tool call again without adding a summary or other text after it.".into());
+        r.stop = StopReason::PauseTurn;
+        return;
+    }
     let step = json_call.or_else(|| react.then(|| parse_react(&text)));
     if let Some(ReactStep::Action { tool, input }) = step
         && (!from_json || tools.iter().any(|definition| definition.name == tool))
@@ -689,11 +709,14 @@ mod tests {
             stop: StopReason::EndTurn,
             usage: Usage::default(),
             model: String::new(),
+            follow_up: None,
         };
-        let mut r = turn(&several);
-        react_postprocess(&mut r, &[tool("look"), tool("write")], false);
-        assert_eq!(r.stop, StopReason::ToolUse);
-        assert_eq!(r.message.tool_uses().into_iter().map(|(_, name, _)| name.to_string()).collect::<Vec<_>>(), ["look", "write"]);
+        for react in [false, true] {
+            let mut r = turn(&several);
+            react_postprocess(&mut r, &[tool("look"), tool("write")], react);
+            assert_eq!(r.stop, StopReason::ToolUse, "react={react}");
+            assert_eq!(r.message.tool_uses().into_iter().map(|(_, name, _)| name.to_string()).collect::<Vec<_>>(), ["look", "write"]);
+        }
         let mut r = turn(&several);
         react_postprocess(&mut r, &[tool("look")], false);
         assert!(r.message.tool_uses().is_empty() && r.stop == StopReason::EndTurn, "one isn't offered: none run");
@@ -708,6 +731,40 @@ mod tests {
             let mut r = turn(&answer);
             react_postprocess(&mut r, &[tool("look")], react);
             assert!(r.message.tool_uses().is_empty() && r.stop == StopReason::EndTurn, "react={react}");
+        }
+        for trailing in ["### Summary:\nI listed the files.", "Action: look\nAction Input: {}", "Final Answer: I listed the files."] {
+            let text = format!("{}\n{}", call("look"), trailing);
+            for react in [false, true] {
+                let mut r = turn(&text);
+                react_postprocess(&mut r, &[tool("look")], react);
+                assert!(r.message.tool_uses().is_empty(), "react={react}, trailing={trailing}");
+                assert_eq!(r.stop, StopReason::PauseTurn, "react={react}, trailing={trailing}");
+                assert_eq!(
+                    r.follow_up.as_deref(),
+                    Some(
+                        "The fenced tool call in your previous response was not run because text followed the closing fence. Send the tool call again without adding a summary or other text after it."
+                    ),
+                    "react={react}, trailing={trailing}"
+                );
+            }
+        }
+        // Protocol text between calls must not be cleared by another fence (PR #1031).
+        for marker in ["Action: look\nAction Input: {}", "Final Answer: Here's an example:"] {
+            let text = format!("{}\n{marker}\n{}\nThen:\n{}", call("look"), call("write"), call("look"));
+            assert!(fenced_calls(&text).is_none(), "{marker}");
+            for react in [false, true] {
+                let mut r = turn(&text);
+                react_postprocess(&mut r, &[tool("look"), tool("write")], react);
+                assert!(r.message.tool_uses().is_empty(), "react={react}, marker={marker}");
+                assert_eq!(r.stop, StopReason::PauseTurn, "react={react}, marker={marker}");
+                assert_eq!(
+                    r.follow_up.as_deref(),
+                    Some(
+                        "The fenced tool call in your previous response was not run because text followed the closing fence. Send the tool call again without adding a summary or other text after it."
+                    ),
+                    "react={react}, marker={marker}"
+                );
+            }
         }
     }
 

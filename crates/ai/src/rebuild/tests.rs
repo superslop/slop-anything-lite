@@ -142,6 +142,16 @@ fn spanish_requests_keep_their_project_kind() {
 }
 
 #[test]
+fn portuguese_and_turkish_requests_keep_their_project_kind() {
+    for request in ["Um jogo simples da cobrinha", "Basit bir yılan oyunu", "Bir oyun yap"] {
+        assert_eq!(choose(request, &TargetRef::None), ("game", "Unity"), "{request}");
+    }
+    assert_eq!(choose("Bir web sitesi yap", &TargetRef::None), ("website", stacks::BUILDERS_CHOICE));
+    assert_eq!(choose("Um site para a minha padaria", &TargetRef::None), ("website", stacks::BUILDERS_CHOICE));
+    assert_eq!(choose("Bir oyuncak mağazası uygulaması", &TargetRef::None).0, "app", "oyuncak is a toy");
+}
+
+#[test]
 fn vietnamese_requests_keep_their_project_kind() {
     for request in ["Một trò chơi rắn săn mồi đơn giản", "Trò chơi đó, thêm bảng xếp hạng"] {
         assert_eq!(choose(request, &TargetRef::None), ("game", "Unity"), "{request}");
@@ -1312,6 +1322,17 @@ fn clean_room_studies_nothing_inside_and_deep_mode_looks() {
 }
 
 #[test]
+fn an_electron_programs_runtime_is_not_analysed() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("resources")).unwrap();
+    let program = d.path().join("App.exe");
+    std::fs::write(&program, b"MZ").unwrap();
+    assert!(!super::study::is_electron_runtime(&program), "a program with no asar beside it is analysed");
+    std::fs::write(d.path().join("resources/app.asar"), b"asar").unwrap();
+    assert!(super::study::is_electron_runtime(&program));
+}
+
+#[test]
 fn deep_mode_maps_the_javascript_beside_an_exe_target() {
     let d = tempfile::tempdir().unwrap();
     let app = d.path().join("App");
@@ -1408,6 +1429,17 @@ mod picking_up_a_build {
         let projects = dir.path().join("projects");
         std::fs::create_dir_all(&projects).unwrap();
         Bench { _dir: dir, hub, projects, prompts }
+    }
+
+    /// #923: starting a run is what loads the keys, for builders that use this session's tools.
+    #[test]
+    fn a_run_loads_the_saved_asset_keys_into_its_session() {
+        let b = bench();
+        b.hub.set_asset_key("fal", "k-1").unwrap();
+        let ws = Workspace::create(&b.projects, "x", "Build a notes app", TargetRef::None).unwrap();
+        let _ = try_it(&b, &ws);
+        let keys = b.hub.engine.session().ext.get::<craft_anything_engine::tools::asset_tools::AssetKeys>().unwrap_or_default();
+        assert_eq!(keys.get("fal"), Some("k-1"));
     }
 
     fn try_it(b: &Bench, ws: &Workspace) -> (bool, Vec<feed::FeedItem>) {
@@ -1722,12 +1754,12 @@ mod picking_up_a_build {
         b.hub.engine.session().settings.ai = config.to_table().unwrap();
         let agent = b._dir.path().join("agent.sh");
         let script = std::fs::read_to_string(&agent).unwrap();
-        let script = script.replacen("#!/bin/sh\n", "#!/bin/sh\nif [ \"$2\" = '--help' ]; then printf '%s\\n' '--format'; exit 0; fi\n", 1);
+        let script = script.replacen("#!/bin/sh\n", "#!/bin/sh\nif [ \"$2\" = '--help' ]; then printf '%s\\n' '--format --standalone'; exit 0; fi\n", 1);
         let error = json!({"type":"error","error":{"name":"APIError","data":{"message":"fixture sign in needed","statusCode":401,"isRetryable":false}}});
         std::fs::write(&agent, script.replace("echo Done.", &format!("printf '%s\\n' '{error}'\nexit 1"))).unwrap();
         let (ok, feed) = try_it(&b, &ws);
         assert!(!ok);
-        assert_eq!(prompts_given(&b), 1, "the unavailable scan does not block or repeat the builder");
+        assert_eq!(prompts_given(&b), 1, "the unavailable scan does not block or repeat the builder: {feed:?}");
         assert!(feed.iter().any(|i| matches!(i, feed::FeedItem::Error { message, .. } if message.contains("fixture sign in needed"))), "{feed:?}");
         let saved = Workspace::open(&ws.root).unwrap();
         assert!(!saved.manifest.awaiting_check, "a failed turn has not finished its build");
@@ -2086,6 +2118,24 @@ fn just_ask_is_told_to_the_builder_shortly_and_cut_on_a_character() {
     assert!(super::just_asked(&longest).encode_utf16().count() < 20_000);
 }
 
+/// #923: with OpenRouter as the builder, every asset call said "No fal.ai key" with one saved. The
+/// project hasn't turned on generated assets, so nothing is sent or spent.
+#[test]
+fn a_saved_asset_key_gets_an_api_builders_tool_past_the_key_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(dir.path(), "x", "Make a game", TargetRef::None).unwrap();
+    let mut worker = check_worker(&ws, false);
+    worker.attach(&ws).unwrap();
+    let call =
+        |w: &Worker| w.engine.call("assets_image_generate", json!({"prompt": "a crate", "save_as": "crate.png"}), CallOptions::new(Caller::Ui)).err().unwrap();
+    assert_eq!(call(&worker).code, ErrorCode::BadSettings, "no key loaded yet");
+    let store = crate::KeyStore::file_only(dir.path().join("keys.toml"));
+    store.set(crate::keys::FAL_KEY, "k-1").unwrap();
+    worker.load_asset_keys(&store);
+    assert_eq!(call(&worker).code, ErrorCode::NoPermission);
+    assert!(worker.assets, "the brief and the tools go by the same read");
+}
+
 fn check_worker(ws: &Workspace, deep: bool) -> Worker {
     let mut s = craft_anything_engine::testing::session();
     s.settings.deep_mode = deep;
@@ -2108,6 +2158,91 @@ fn check_worker(ws: &Workspace, deep: bool) -> Worker {
         faithful: false,
         reset_progress_after_notes: false,
     }
+}
+
+/// A new Python project reaches the same build/screenshot path as a packaged app. The local
+/// interpreter is a stand-in: no installed Python, packages, window, network or user settings.
+#[cfg(unix)]
+#[test]
+fn new_python_projects_build_and_save_screenshots_through_their_toolchain() {
+    use craft_anything_engine::tools::web_common::{Image, encode_png};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(dir.path(), "Python sample", "Make an app in Python", TargetRef::None).unwrap();
+    let app = ws.app_dir();
+    std::fs::create_dir_all(app.join(".venv/bin")).unwrap();
+    std::fs::write(app.join("main.py"), "# Owned interpreter fixture\n").unwrap();
+    std::fs::write(app.join("pyproject.toml"), "[project]\nname = 'sample'\nversion = '0.1.0'\n").unwrap();
+    // An HTML asset beside Python code must not bypass the Python build as a static site.
+    std::fs::write(app.join("index.html"), "<h1>asset</h1>").unwrap();
+    let program = app.join(".venv/bin/python");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\n\
+        if [ \"$1\" = '-m' ]; then\n\
+          printf '%s\\n' \"$@\" > build-args.txt\n\
+          if [ -f fail-build ]; then echo 'error: fixture compilation failed'; exit 1; fi\n\
+          exit 0\n\
+        fi\n\
+        [ \"$1\" = 'main.py' ] || exit 8\n\
+        [ \"$2\" = '--screenshot' ] || exit 8\n\
+        [ ! -f fail-shot ] || exit 9\n\
+        cp fixture.png \"$3\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let rgba = (0..64 * 36).flat_map(|i| if i % 2 == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }).collect();
+    std::fs::write(app.join("fixture.png"), encode_png(&Image { width: 64, height: 36, rgba }).unwrap()).unwrap();
+    let worker = check_worker(&ws, false);
+    let checks = worker.run_checks(&ws, &AppKind, 1).unwrap();
+    assert_eq!(checks.iter().map(|c| (c.check.as_str(), c.passed)).collect::<Vec<_>>(), [("build", true), ("app-screenshot", true)], "{checks:?}");
+    let args = std::fs::read_to_string(app.join("build-args.txt")).unwrap();
+    assert!(args.starts_with("-m\ncompileall\n-q\n") && args.ends_with(".\n"), "{args}");
+    assert_eq!(args.lines().nth(3), Some("-f"), "{args}");
+    assert_eq!(launch(&app, None).unwrap(), (program, vec!["main.py".into()]), "Play uses the same interpreter/entrypoint");
+    let shot = ws.checks_dir().join("round-1/screenshot.png");
+    assert!(shot.is_file());
+
+    std::fs::write(app.join("fail-shot"), "").unwrap();
+    let checks = worker.run_checks(&ws, &AppKind, 1).unwrap();
+    assert!(checks[0].passed && !checks[1].passed && checks[1].note.contains("code 9"), "{checks:?}");
+    assert!(!shot.exists(), "the old screenshot cannot make a failed run pass");
+    std::fs::write(app.join("fail-build"), "").unwrap();
+    let checks = worker.run_checks(&ws, &AppKind, 2).unwrap();
+    assert_eq!(checks.len(), 1);
+    assert!(!checks[0].passed && checks[0].note.contains("fixture compilation failed"), "{checks:?}");
+}
+
+/// Opt-in smoke test with a real local Python; all files and bytecode stay in the temp project.
+/// The fixture writes a known nonblank PNG without opening a GUI or importing external packages.
+#[cfg(unix)]
+#[test]
+#[ignore = "requires Python 3 on PATH; runs an owned headless fixture"]
+fn real_python_new_project_build_and_screenshot() {
+    use craft_anything_engine::tools::web_common::{Image, encode_png};
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(dir.path(), "Python smoke", "An app in Python", TargetRef::None).unwrap();
+    let app = ws.app_dir();
+    std::fs::create_dir_all(app.join(".venv/bin")).unwrap();
+    let python = craft_anything_platform::which("python3").expect("install Python 3 to run this ignored test");
+    std::os::unix::fs::symlink(python, app.join(".venv/bin/python")).unwrap();
+    let rgba = (0..64 * 36).flat_map(|i| if i % 2 == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }).collect();
+    let png = encode_png(&Image { width: 64, height: 36, rgba }).unwrap();
+    let source = format!("import pathlib, sys\nif sys.argv[1] == '--screenshot':\n    pathlib.Path(sys.argv[2]).write_bytes(bytes({png:?}))\n");
+    std::fs::write(app.join("main.py"), source).unwrap();
+    // compileall's cache check uses whole-second mtimes. Keep both revisions at the same
+    // timestamp so a stale bytecode cache cannot make a syntax error look like a good build.
+    let same_time = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    std::fs::File::open(app.join("main.py")).unwrap().set_modified(same_time).unwrap();
+    std::fs::write(app.join(".venv/ignored.py"), "def broken(\n").unwrap();
+    let worker = check_worker(&ws, false);
+    let checks = worker.run_checks(&ws, &AppKind, 1).unwrap();
+    assert_eq!(checks.iter().map(|c| (c.check.as_str(), c.passed)).collect::<Vec<_>>(), [("build", true), ("app-screenshot", true)], "{checks:?}");
+    std::fs::write(app.join("main.py"), "def broken(\n").unwrap();
+    std::fs::File::open(app.join("main.py")).unwrap().set_modified(same_time).unwrap();
+    let checks = worker.run_checks(&ws, &AppKind, 2).unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert!(!checks[0].passed && checks[0].note.contains("SyntaxError"), "{checks:?}");
 }
 
 /// A kind with its checks after the first `.1`, so a test needn't build or start anything.

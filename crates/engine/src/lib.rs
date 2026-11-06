@@ -31,6 +31,7 @@ pub mod target;
 pub mod testing;
 pub mod tool;
 pub mod tool_list;
+pub mod toolchains;
 pub mod tools;
 pub mod versioned;
 pub mod wasm_plugins;
@@ -41,7 +42,7 @@ pub use registry::Registry;
 pub use session::Session;
 pub use settings::{Mode, Settings};
 pub use target::{Target, TargetKind};
-pub use tool::{Caller, CancelToken, Ctx, Effects, Progress, Requires, ToolOutput, ToolSpec, Toolset};
+pub use tool::{AGENT_ENV, Caller, CancelToken, Ctx, Effects, Progress, Requires, ToolOutput, ToolSpec, Toolset};
 
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::{Mutex, MutexGuard};
