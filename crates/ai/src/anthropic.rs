@@ -8,6 +8,11 @@ use serde_json::{Value, json};
 
 pub const DEFAULT_BASE: &str = "https://api.anthropic.com";
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
+
+/// Whether an address is Anthropic's own API, which speaks this protocol and not OpenAI's (#1100).
+pub fn is_anthropic_api(address: &str) -> bool {
+    crate::openai::https_host_path(address).is_some_and(|(host, _)| host.eq_ignore_ascii_case("api.anthropic.com"))
+}
 /// Offered in the model dropdown when the live list can't be fetched.
 pub const MODELS: &[&str] = &["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
 /// Models that offer fewer effort levels than all five (Claude's effort guide), by model id
@@ -348,6 +353,17 @@ pub fn sorted(mut tools: Vec<ToolDef>) -> Vec<ToolDef> {
 mod tests {
     use super::*;
     use crate::model::Effort;
+
+    /// #1100: Anthropic's own address is told apart by its host, not by a look-alike.
+    #[test]
+    fn anthropics_own_address_is_recognised() {
+        for yes in ["https://api.anthropic.com/v1", "https://api.anthropic.com", "HTTPS://API.Anthropic.com/v1/"] {
+            assert!(is_anthropic_api(yes), "{yes}");
+        }
+        for no in ["http://api.anthropic.com/v1", "https://api.anthropic.com.example.test/v1", "https://proxy.test/api.anthropic.com/v1", "api.anthropic.com"] {
+            assert!(!is_anthropic_api(no), "{no}");
+        }
+    }
 
     #[test]
     fn body_has_required_fields() {

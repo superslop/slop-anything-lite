@@ -554,6 +554,40 @@ mod tests {
         }
     }
 
+    /// #1102: a tool holds the session while it runs, so starting a build on an API backend must not
+    /// ask for it again; over MCP the call waited on itself until the deadlock was broken.
+    #[test]
+    fn rebuild_start_on_an_api_backend_does_not_wait_on_its_own_session() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = craft_anything_engine::testing::session();
+        let mut ai = crate::AiConfig::default();
+        ai.upsert(crate::BackendEntry {
+            config: crate::BackendConfig {
+                name: "Local".into(),
+                kind: crate::BackendKind::OpenaiCompatible,
+                model: "qwen3:8b".into(),
+                // Nothing listens there: the run only has to start, not to get an answer.
+                base_url: Some("http://127.0.0.1:9/v1".into()),
+                ssh_host: None,
+                enabled: true,
+            },
+            options: Default::default(),
+        });
+        s.settings.ai = ai.to_table().unwrap();
+        s.settings.save_to(&s.config_dir().join("config.toml")).unwrap();
+        let e = Engine::shared(s, specs());
+        let ws = Workspace::create(d.path(), "Notes", "A notes app", TargetRef::None).unwrap();
+        let ok = || CallOptions::new(Caller::Mcp).with_consent(Consent::Granted);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (call, root) = (e.clone(), ws.root.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(call.call("rebuild_start", json!({"project": root, "request": "make it blue", "rounds": 0, "backend": "Local"}), ok()));
+        });
+        let started = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("rebuild_start returned instead of waiting on its own session");
+        assert!(started.is_ok(), "{:?}", started.err());
+        let _ = e.call("rebuild_stop", json!({"project": ws.root}), ok());
+    }
+
     /// A saved builder that is off is named in the start result, so MCP callers see the
     /// replacement too.
     #[cfg(unix)]

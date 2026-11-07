@@ -50,6 +50,7 @@ pub const KNOWN: &[(&str, &str, &str)] = &[
     ("qwen-code", "qwen", "Qwen Code"),
     ("goose", "goose", "Goose"),
     ("maki", "maki", "Maki"),
+    ("aider", "aider", "Aider"),
     ("dsh", "dsh", "DeepSeek Harness"),
 ];
 
@@ -1633,7 +1634,7 @@ mod tests {
         let g = build_args(adapter_for("gemini-cli").as_ref(), &BackendOptions::default(), "q", "", &mcp(), None, Access::Analyse);
         assert!(g.windows(2).any(|w| w[0] == "--output-format" && w[1] == "stream-json"));
         let o = BackendOptions { args: vec!["run".into()], ..Default::default() };
-        assert_eq!(build_args(adapter_for("aider").as_ref(), &o, "q", "", &mcp(), None, Access::Analyse), vec!["run".to_string(), "q".to_string()]);
+        assert_eq!(build_args(adapter_for("no-such-agent").as_ref(), &o, "q", "", &mcp(), None, Access::Analyse), vec!["run".to_string(), "q".to_string()]);
     }
 
     #[test]
@@ -2429,8 +2430,11 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
     /// Agents that are never handed the tool server build without the helper.
     #[test]
     fn only_agents_handed_the_tool_server_need_the_helper() {
-        for agent in ["gemini-cli", "aider", "no-such-agent"] {
-            assert!(check_builder_tools(adapter_for(agent).as_ref(), agent, &BackendOptions::default(), &CancelToken::default()).is_ok(), "{agent}");
+        // Aider is handed no tool server, so it needs no helper; it still needs a model or key
+        // before it runs (#72), which its own tests cover.
+        let aider = BackendOptions { cli_model: Some("anthropic/claude-sonnet-4".into()), ..Default::default() };
+        for (agent, options) in [("gemini-cli", BackendOptions::default()), ("aider", aider), ("no-such-agent", BackendOptions::default())] {
+            assert!(check_builder_tools(adapter_for(agent).as_ref(), agent, &options, &CancelToken::default()).is_ok(), "{agent}");
         }
     }
 
@@ -2538,13 +2542,13 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         let mut p = StreamParser::new(echo);
         assert!(matches!(p.line(r#"{"say":"hello"}"#).as_slice(), [AgentEvent::TextDelta { text }] if text == "hello"));
         // Unknown agents stream their output as text; the built-ins keep their own adapters.
-        assert!(!reg.for_agent("aider").streams_json());
+        assert!(!reg.for_agent("no-such-agent").streams_json());
         assert!(reg.for_agent("claude").resumes() && reg.for_agent("codex").resumes() && reg.for_agent("antigravity").resumes());
         // Registering an adapter for an existing id replaces that one.
         reg.register(Arc::new(EchoAgent));
         assert_eq!(
             format!("{reg:?}"),
-            r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "generic-cli", "hermes", "maki", "copilot", "grok", "dsh", "echo-agent"]"#
+            r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "generic-cli", "hermes", "maki", "aider", "copilot", "grok", "dsh", "echo-agent"]"#
         );
     }
 
