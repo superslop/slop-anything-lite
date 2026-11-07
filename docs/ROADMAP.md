@@ -167,6 +167,20 @@ cheapest help we can give anyone, so nothing below should hold it up for long.
 
 ### R5.2 Keeping contributions moving
 Owner: maintainers · Status: in progress
+- [x] Fix PR #1030's Windows descendant fixture startup and stop the watched launch before
+      startup assertions can fail; cover the failure cleanup path
+      — claimed: Codex, branch bugfix/r5.2-watched-launch-tests
+- [ ] Run PR #1030's shell-free parent/descendant fixture and startup-timeout cleanup test
+      on Windows; the contributor reproduced startup failure and leaked processes on 07671fe
+- [x] Clarify PR #1030's test Rustdoc: post-stop heartbeat sampling, child-fixture guard,
+      and the direct-run no-write check
+      — claimed: Codex, branch bugfix/r5.2-watched-launch-tests
+- [x] Address PR #1030 review: take the heartbeat baseline after stopping, guard the descendant
+      stand-in against direct ignored-test runs, and document the test helpers
+      — claimed: Codex, branch bugfix/r5.2-watched-launch-tests
+- [ ] `regression_preview_limits_connections_and_releases_listener` (platform) fails on macOS
+      with `Invalid argument` in its socket fixture, also reported before PR #1030's review fixes.
+      Investigate the fixture separately from the watched descendant shutdown test
 Review comes before new work while the queue is long, smallest and clean PRs first. A PR is merged
 only when it's green and a maintainer has fully reviewed it, code as well as wording.
 - [ ] Maintainers: protect `main` (PRs required, squash only); the only ruleset covers `release`
@@ -230,8 +244,8 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       Compare with the folder's canonical path
 - [ ] Revisit the two advisory exceptions in `deny.toml`: `rsa` (no fix; we only verify with public
       keys) when rsa 0.10 lands, and unmaintained `zbus_names`/`zvariant` (Linux-only via keyring
-      and accesskit) when those move on. `deny.toml`'s comments say this is tracked in R0.3: point
-      them here
+      and accesskit) when those move on. `deny.toml`'s comments pointed at R0.3, which never held
+      them; they name this line now — claimed: kuseidos, branch docs/r5.2-deny-points-at-its-own-roadmap-line
 - [ ] Check whether the release workflows still run actions that target Node.js 20. None is named
       here any more: every job calls `storytold/craft-common-actions@main`, so a fix belongs there
 - [x] Correct STATUS.md's obsolete GUI-only limit: document the shared project feed, engine
@@ -389,6 +403,8 @@ been run live.
 - [ ] Find how each local server is told its context size and set it, or stop with a plain message
       when the prompt won't fit. We assume 24k and send no `num_ctx`, which an OpenAI-style endpoint
       may ignore anyway; LM Studio refused a 12.6k prompt on its 8k default (#73)
+- [x] When a server refuses a request for its context window and says the size (Ollama, llama.cpp,
+      OpenAI-style), fit the conversation to that window and ask once more, else say how to raise it (#962)
 - [x] A per-backend context budget in `[[ai.backends]]` (`LoopConfig::context_tokens` exists), for
       services whose real window differs from 150k (#374) — implementation: `6bd94b84828ec89b805cb8a246f557d0a778c037`
 - [x] Find LM Studio on another port (#73): the port in its settings file (when it is there) and
@@ -405,6 +421,7 @@ been run live.
 - [ ] A chat sent while a llama.cpp router is still loading the model ended after 31 s with "The
       answer stream ended early." and no next step (seen once live, 27B model); say the server may
       still be loading it and to try again in a minute
+      — claimed: yashpatadiya1724-cmyk, branch bugfix/r5.4-stream-loading-remediation
 
 ### R5.5 API-key builds fail in words people can use
 Owner: open · Status: todo
@@ -574,6 +591,17 @@ Owner: open · Status: in progress
       discovery, MCP-only tool restrictions, model selection and fresh read-only questions;
       unit tests and CLI 1.0.105 with an isolated home and loopback model, all five access modes
       — claimed: qu-gg, branch `feature/r2.2-copilot-integration` (recorded during PR preparation)
+- [x] Grok Build as a coding agent over ACP (`grok agent stdio`): discovery in `~/.grok/bin`,
+      the person's own `grok login` (a missing `auth.json` is unknown, so an API key still
+      starts), model and reasoning effort, and our MCP server on the session with `"type": "stdio"`
+      only for Grok. Clean room, deep chat, and questions are refused, because Grok can read and
+      edit without a permission request. Verified against Grok 1.0.77's ACP handshake and
+      `session/set_config_option` (the CLI `--model` flag does not stick after `session/new`). A
+      live deep build on 2026-11-06 (Grok 1.0.77) finished, called the Craft Anything server, and
+      answered one permission request. Clean room and deep chat were not run live; those runs
+      are refused.
+      See [Grok Build](grok.md).
+      — branch `feature/r2.2-grok-agent`
 - [x] Review hardening: cap target handoff at 128 while preserving the active target; propagate
       context-discovery cancellation, normalize CLI-only efforts for Claude requests, and name
       the configured agent in shared picker warnings, with focused regressions and translations

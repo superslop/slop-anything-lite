@@ -42,6 +42,7 @@ pub const KNOWN: &[(&str, &str, &str)] = &[
     ("claude-code", "claude", "Claude Code"),
     ("codex", "codex", "Codex"),
     ("copilot", "copilot", "GitHub Copilot"),
+    ("grok", "grok", "Grok Build"),
     ("gemini-cli", "gemini", "Gemini CLI"),
     ("antigravity", "agy", "Antigravity"),
     ("opencode", "opencode", "OpenCode"),
@@ -78,7 +79,18 @@ fn program_in(config: &BackendConfig, options: &BackendOptions, search: Option<s
         return Ok(usual_program(&usual, search)?.unwrap_or(usual));
     }
     let path = Path::new(chosen);
-    if !local || path.parent().is_none_or(|p| p.as_os_str().is_empty()) || path.exists() {
+    let bare = path.parent().is_none_or(|p| p.as_os_str().is_empty());
+    // A saved `claude`, by name or as the desktop app's own file, is looked up as the usual one is,
+    // so it never starts the desktop app.
+    let named_claude = bare && path.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(&usual));
+    if local && usual == "claude" && (named_claude || is_claude_desktop(path)) {
+        return match usual_program(&usual, search)? {
+            Some(program) => Ok(program),
+            None if bare => Ok(chosen.to_string()),
+            None => Err(desktop_app_error(path)),
+        };
+    }
+    if !local || bare || path.exists() {
         return Ok(chosen.to_string());
     }
     // Gone, and nothing beside it: the usual program if it's really here, else the saved path, so
@@ -94,12 +106,16 @@ fn usual_program(usual: &str, search: Option<std::ffi::OsString>) -> Result<Opti
     match (first, find_program_in(usual, search)) {
         (None, _) => Ok(None),
         (Some(first), Some(real)) => Ok(Some(if first == real { usual.to_string() } else { real.display().to_string() })),
-        (Some(app), None) => Err(ToolError::new(
-            ErrorCode::EngineMissing,
-            format!("Claude Code isn't installed: the `claude` found ({}) is the Claude desktop app, which can't build.", app.display()),
-        )
-        .with_remediation("Install Claude Code apart from the desktop app, sign in to it once in a terminal, then try again.")),
+        (Some(app), None) => Err(desktop_app_error(&app)),
     }
+}
+
+fn desktop_app_error(app: &Path) -> ToolError {
+    ToolError::new(
+        ErrorCode::EngineMissing,
+        format!("Claude Code isn't installed: the `claude` found ({}) is the Claude desktop app, which can't build.", app.display()),
+    )
+    .with_remediation("Install Claude Code apart from the desktop app, sign in to it once in a terminal, then try again.")
 }
 
 /// Where an agent's program is on this computer: the first match on the search path that is
@@ -596,27 +612,28 @@ fn acp_for(spec: &CliSpec) -> Option<AcpConversation> {
     let acp_args = selected_acp_args(adapter.as_ref(), &agent, &spec.options).filter(|_| local)?;
     // No program to start: the plain run reports why.
     let program = program_of(&spec.config, &spec.options).ok()?;
-    let access = match (spec.question, spec.deep, spec.builder.is_some()) {
-        (true, true, _) => Access::Question,
-        (true, false, _) => Access::CleanRoomQuestion,
-        (false, true, true) => Access::Build,
-        (false, false, true) => Access::CleanRoomBuild,
-        _ => Access::Analyse,
-    };
+    // Same modes as the plain runner, including Clean room chat (no builder, not deep).
+    let access = access_for(spec.builder.is_some(), spec.deep, spec.question);
     let mut args = adapter.acp_options(&spec.options, access);
     args.extend(acp_args.iter().map(|a| a.to_string()));
     args.extend(acp::model_args(&agent, spec.options.cli_model.as_deref()));
+    // After the mode words and model flag, still before a trailing subcommand (`stdio` for Grok).
+    args.extend(adapter.acp_mode_options(&spec.options, access));
     let cwd = spec.project.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_else(std::env::temp_dir);
     let mcp = mcp_for(spec, false);
     if !spec.question {
         args.extend(adapter.acp_mcp_options(&mcp));
     }
+    args.extend(adapter.acp_trailing().iter().map(|word| (*word).to_string()));
     let preamble = spec.preamble.clone().unwrap_or_else(|| crate::prompt::cli_preamble(spec.beginner));
+    let session_config = adapter.acp_session_config(&spec.options);
     Some(
         AcpConversation::new(&spec.config.name, &agent, program, args, cwd, mcp, if spec.question { None } else { spec.resume.clone() })
             .with_validation(adapter.validate_options(&spec.options))
+            .with_access_limit(adapter.validate_access(access))
             .with_adapter(adapter)
             .with_question(spec.question)
+            .with_session_config(session_config)
             .with_preamble(preamble)
             .with_logs(spec.logs.clone()),
     )
@@ -1253,6 +1270,18 @@ mod tests {
         assert_eq!(err.code, ErrorCode::EngineMissing);
         assert!(err.message.contains("desktop app"), "{}", err.message);
         assert_eq!(program_in(&claude, &gone, path(&[app_dir])).unwrap(), gone.command.clone().unwrap(), "only the app: the saved path, not the app");
+        // A saved `claude`, by name or as the app's own file (review of #1017), is filtered the same way.
+        let saved = |c: &str| BackendOptions { command: Some(c.into()), ..Default::default() };
+        let (by_name, the_app) = (saved(file), saved(&app.display().to_string()));
+        assert_eq!(program_in(&claude, &by_name, path(&[app_dir, cli_dir])).unwrap(), real, "a saved name, the app first");
+        assert_eq!(program_in(&claude, &by_name, path(&[cli_dir, app_dir])).unwrap(), "claude", "a saved name that starts the real one");
+        assert_eq!(program_in(&claude, &by_name, path(&[app_dir])).unwrap_err().code, ErrorCode::EngineMissing);
+        assert_eq!(program_in(&claude, &by_name, path(&[])).unwrap(), file, "nothing found: the saved name, so the run says so");
+        assert_eq!(program_in(&claude, &the_app, path(&[app_dir, cli_dir])).unwrap(), real, "the app's own file saved: the real one");
+        let err = program_in(&claude, &the_app, path(&[])).unwrap_err();
+        assert!(err.code == ErrorCode::EngineMissing && err.message.contains("desktop app"), "{}", err.message);
+        let saved_cli = saved(&cli.display().to_string());
+        assert_eq!(program_in(&claude, &saved_cli, path(&[app_dir])).unwrap(), real, "a saved real path is kept");
         // Another agent's program in such a folder is only filtered for Claude.
         let other = app_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         std::fs::write(&other, b"").unwrap();
@@ -2436,7 +2465,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         reg.register(Arc::new(EchoAgent));
         assert_eq!(
             format!("{reg:?}"),
-            r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "generic-cli", "hermes", "maki", "copilot", "dsh", "echo-agent"]"#
+            r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "generic-cli", "hermes", "maki", "copilot", "grok", "dsh", "echo-agent"]"#
         );
     }
 
