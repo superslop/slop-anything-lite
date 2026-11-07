@@ -659,6 +659,9 @@ Owner: open · Status: in progress
       assuming `/bin`; the shell uses the bounded process runner.
       Reproduced the old failure on macOS; the AI suite now passes (446 passed, 2 ignored). PR #1018
       — claimed: Codex, branch test/r2.2-posix-remote-helper
+- [x] Find OpenCode's CLI inside its Windows desktop app (`opencode-cli.exe`), for detection and for runs (#1060)
+- [ ] Settings → AI can only add an agent it detected: add one by choosing its program, for a CLI
+      kept somewhere we don't look (#1060)
 - [ ] Verify OpenCode model discovery and an explicit thinking selection on a live SSH host,
       and complete a live generation with the selected model and variant (local catalogue verified).
 
@@ -773,6 +776,11 @@ Owner: open · Status: in progress
       going through our server — claimed: 0231071, branch `feature/dsh-agent-adapter`
 - [ ] DeepSeek Harness: no resume (its headless profile keeps no session), a build on the harness's
       desktop profile is untried, and the task still goes over in argv (see the argv note above)
+- [ ] `setup` writes the plain `mcp` command, so it drops an `--all-tools` an entry already has, and
+      `doctor` then calls that entry "a different copy or shape of the command" and suggests the very
+      command that breaks it. The installed skill now warns against running `setup` on such an entry;
+      `doctor` and `setup` should keep the person's extra arguments instead
+      — claimed: 18923837179wjt-dot, branch fix/setup-skill-warns-before-setup-drops-all-tools
 
 ### R2.4 Runtime study for apps and games (with consent)
 Owner: maintainers · Status: in progress
@@ -858,7 +866,9 @@ Gaps found while using the app for real projects.
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as
       today. Found when Auto mode refused every `git push` without a card, so the person's OK in
-      the prompt box never reached the check, and refused `gh repo view` as publishing too
+      the prompt box never reached the check, and refused `gh repo view` as publishing too.
+      Tried live by a maintainer on Windows 10 (a release build of `main` at `b700e1d`,
+      2026-11-06): a builder's push was approved and went through
       — claimed: tanish2k09, branch feature/r2.9-project-approvals
 - [ ] Agents that don't ask our approval tool (OpenCode `--auto`, Hermes `-z`, Maki's `-p`) aren't
       held to a project's approval choices either; part of R2.2's approval decision
