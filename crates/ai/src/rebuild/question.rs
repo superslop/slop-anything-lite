@@ -52,6 +52,9 @@ pub struct Answered {
     /// The AI that answered.
     pub backend: String,
     pub cost_usd: Option<f64>,
+    /// The saved builder that was off or gone, when another AI answered in its place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub builder_notice: Option<String>,
 }
 
 /// Answer `question` about `ws` (see the module docs), with the person's `settings` (taken from
@@ -71,6 +74,7 @@ pub fn ask(
         return Err(ToolError::invalid(format!("A question is 1 to {MAX_QUESTION} characters.")));
     }
     let cfg = crate::AiConfig::from_settings(settings);
+    let builder_notice = super::builder_replacement(&cfg, ws, None).map(|r| super::replaced_builder_notice(&r.saved, &r.used));
     let entry = builder_backend(&cfg, project_builder(&cfg, ws))?;
     let deep = settings.deep_mode;
     let cli = |resume: Option<String>| -> Box<dyn Conversation> {
@@ -139,7 +143,7 @@ pub fn ask(
     // A copy of a session reports the whole session's running cost, not this question's (a
     // live run said $22.67 for a few cents of cache reads): say nothing rather than that.
     let cost_usd = cost_usd.filter(|_| from != AnsweredFrom::BuildersSession);
-    Ok(Answered { answer, from, backend: entry.config.name.clone(), cost_usd })
+    Ok(Answered { answer, from, backend: entry.config.name.clone(), cost_usd, builder_notice })
 }
 
 /// The builder's session, kept in the project, put back where its agent looks when this computer

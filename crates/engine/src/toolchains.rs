@@ -41,7 +41,7 @@ pub struct Toolchain {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct LaunchRecipe {
     pub file: String,
-    /// `{file}` expands to the matched relative filename in a single argument, without a shell.
+    /// `{file}` is the matched relative filename. `{package}` is its parent with an explicit `./`.
     pub command: Vec<String>,
 }
 
@@ -64,28 +64,37 @@ pub fn found_in(dir: &Path) -> Option<&'static Toolchain> {
         .or_else(|| catalogue().iter().find(|t| t.standalone_entrypoints && t.launch(dir).is_some()))
 }
 
-/// Bounded root-file matching, also used for launch entrypoints. Exact paths need no directory scan.
+/// Match exact files, root suffixes, or one named file below each child of a fixed directory.
 fn matching_files(dir: &Path, pattern: &str) -> Vec<PathBuf> {
-    match pattern.strip_prefix('*') {
-        Some(suffix) => {
-            let mut files = Vec::new();
-            let Ok(entries) = std::fs::read_dir(dir) else { return files };
-            for (i, entry) in entries.enumerate() {
-                // An incomplete scan cannot establish an unambiguous launch entrypoint.
-                if i >= 256 {
-                    return Vec::new();
-                }
-                let Ok(entry) = entry else { return Vec::new() };
-                let p = entry.path();
-                if p.is_file() && p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(suffix)) {
-                    files.push(p);
-                }
-            }
-            files.sort();
-            files
-        }
-        None => dir.join(pattern).is_file().then(|| dir.join(pattern)).into_iter().collect(),
+    if let Some((folder, filename)) = pattern.split_once("/*/") {
+        return scan_entries(&dir.join(folder), |entry| {
+            let file = entry.path().join(filename);
+            Ok((entry.file_type()?.is_dir() && file.is_file()).then_some(file))
+        });
     }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return scan_entries(dir, |entry| {
+            let file = entry.path();
+            Ok((entry.file_name().to_string_lossy().ends_with(suffix) && file.is_file()).then_some(file))
+        });
+    }
+    let file = dir.join(pattern);
+    file.is_file().then_some(file).into_iter().collect()
+}
+
+fn scan_entries(dir: &Path, candidate: impl Fn(std::fs::DirEntry) -> std::io::Result<Option<PathBuf>>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return files };
+    for (i, entry) in entries.enumerate() {
+        // A partial scan cannot establish that the entrypoint is unique.
+        if i >= 256 {
+            return Vec::new();
+        }
+        let Ok(file) = entry.and_then(&candidate) else { return Vec::new() };
+        files.extend(file);
+    }
+    files.sort();
+    files
 }
 
 impl Toolchain {
@@ -112,8 +121,17 @@ impl Toolchain {
             if files.len() != 1 {
                 continue;
             }
-            let file = files.first()?.strip_prefix(app).ok()?.to_str()?;
-            let command: Vec<String> = recipe.command.iter().map(|arg| arg.replace("{file}", file)).collect();
+            let relative = files.first()?.strip_prefix(app).ok()?;
+            let file = relative.to_str()?;
+            let parent = relative.parent()?;
+            let command: Vec<String> = recipe
+                .command
+                .iter()
+                .map(|arg| match arg.as_str() {
+                    "{package}" => format!("./{}", parent.display()),
+                    _ => arg.replace("{file}", file),
+                })
+                .collect();
             return self.command(app, &command);
         }
         None
@@ -168,6 +186,24 @@ mod tests {
             std::fs::write(dir.path().join(format!("note-{i}")), "").unwrap();
         }
         assert!(launch(dir.path(), None).is_none(), "an incomplete scan cannot prove uniqueness");
+    }
+
+    #[test]
+    fn go_launch_uses_one_command_package_and_prefers_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path();
+        std::fs::write(app.join("go.mod"), "module fixture").unwrap();
+        for name in ["viewer", "library"] {
+            std::fs::create_dir_all(app.join("cmd").join(name)).unwrap();
+        }
+        std::fs::write(app.join("cmd/viewer/main.go"), "package main").unwrap();
+        let launch = || crate::outputs::launch(app, None);
+        let package = format!("./{}", Path::new("cmd").join("viewer").display());
+        assert_eq!(launch(), Some(("go".into(), vec!["run".into(), package])));
+        std::fs::write(app.join("cmd/library/main.go"), "package main").unwrap();
+        assert!(launch().is_none());
+        std::fs::write(app.join("main.go"), "package main").unwrap();
+        assert_eq!(launch(), Some(("go".into(), vec!["run".into(), ".".into()])));
     }
 
     /// A helper script must not override a project's explicit Go, Rust or Node.js manifest.

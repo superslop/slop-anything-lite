@@ -21,9 +21,12 @@ pub fn agent(connect: Duration, first_byte: Duration, body: Duration) -> ureq::A
         .new_agent()
 }
 
-/// The agent for streamed model turns.
-pub fn stream_agent() -> ureq::Agent {
-    agent(Duration::from_secs(15), Duration::from_secs(300), Duration::from_secs(60 * 60))
+/// How long a streamed answer may take unless its AI sets `timeout_secs`.
+pub const STREAM_BODY: Duration = Duration::from_secs(60 * 60);
+
+/// The agent for streamed model turns; `body` bounds the whole answer.
+pub fn stream_agent(body: Duration) -> ureq::Agent {
+    agent(Duration::from_secs(15), Duration::from_secs(300), body)
 }
 
 /// The agent for quick calls (model lists, probes).
@@ -184,6 +187,19 @@ const MAX_SSE_LINE: usize = 8 * 1024 * 1024;
 /// Most data retained for one event, including newlines between its `data:` fields.
 const MAX_SSE_EVENT_DATA: usize = 8 * 1024 * 1024;
 
+/// A stream that stopped mid-answer. One that ran out of time says how to give it more (#1096).
+fn stream_broke_off(e: std::io::Error) -> ToolError {
+    let e = ureq::Error::from(e);
+    let err = ToolError::new(ErrorCode::EngineMissing, format!("The stream broke off: {e}"));
+    match e {
+        ureq::Error::Timeout(ureq::Timeout::RecvBody) => err.with_remediation(
+            "The answer took longer than this AI's time limit (one hour unless set). A slow local model may need longer: set \
+             timeout_secs (in seconds) for this AI under [[ai.backends]] in config.toml.",
+        ),
+        _ => err,
+    }
+}
+
 /// Parse an SSE stream, calling `f` for each event. `f` returns false to stop early.
 /// Handles CRLF, multi-line `data:`, comments (`:`), and a final event without a blank line.
 pub fn parse_sse<R: Read>(r: R, mut f: impl FnMut(SseEvent) -> Result<bool, ToolError>) -> Result<(), ToolError> {
@@ -193,10 +209,7 @@ pub fn parse_sse<R: Read>(r: R, mut f: impl FnMut(SseEvent) -> Result<bool, Tool
     let mut line = Vec::new();
     loop {
         line.clear();
-        let n = (&mut reader)
-            .take(MAX_SSE_LINE as u64)
-            .read_until(b'\n', &mut line)
-            .map_err(|e| ToolError::new(ErrorCode::EngineMissing, format!("The stream broke off: {e}")))?;
+        let n = (&mut reader).take(MAX_SSE_LINE as u64).read_until(b'\n', &mut line).map_err(stream_broke_off)?;
         if n == 0 {
             break;
         }
@@ -247,6 +260,22 @@ pub fn parse_sse<R: Read>(r: R, mut f: impl FnMut(SseEvent) -> Result<bool, Tool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1096: a stream that ran out of time says which setting gives it more; another break doesn't.
+    #[test]
+    fn a_stream_that_ran_out_of_time_says_how_to_give_it_more() {
+        struct Fails(fn() -> ureq::Error);
+        impl Read for Fails {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err((self.0)().into_io())
+            }
+        }
+        let timed_out = parse_sse(Fails(|| ureq::Error::Timeout(ureq::Timeout::RecvBody)), |_| Ok(true)).unwrap_err();
+        assert!(timed_out.message.contains("timeout"), "{}", timed_out.message);
+        assert!(timed_out.remediation.as_deref().is_some_and(|r| r.contains("timeout_secs")), "{timed_out:?}");
+        let cut = parse_sse(Fails(|| ureq::Error::ConnectionFailed), |_| Ok(true)).unwrap_err();
+        assert!(cut.remediation.is_none(), "{cut:?}");
+    }
 
     fn collect(s: &str) -> Vec<SseEvent> {
         let mut v = Vec::new();

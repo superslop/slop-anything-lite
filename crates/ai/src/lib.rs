@@ -148,6 +148,12 @@ fn go_env_key(base: &str) -> Option<String> {
     ["OPENCODEGO_API_KEY", "OPENCODE_GO_API_KEY"].iter().filter_map(|v| std::env::var(v).ok()).find(|k| !k.trim().is_empty())
 }
 
+/// How long an API backend's streamed answer may take: its `timeout_secs`, else one hour. A slow
+/// local model can need hours for a long answer (#1096); 0 is not a limit anyone means.
+fn stream_limit(options: &BackendOptions) -> std::time::Duration {
+    options.timeout_secs.filter(|s| *s > 0).map_or(http::STREAM_BODY, std::time::Duration::from_secs)
+}
+
 /// An OpenAI-compatible client, carrying OpenCode Go's session header when the base is its own.
 fn compatible_client(name: &str, base: &str, key: Option<String>, model: &str, session: &str) -> openai::OpenAi {
     let mut o = openai::OpenAi::compatible(name, base, key, model);
@@ -823,21 +829,27 @@ impl AiHub {
         // nothing and gets the small context budget; a remote OpenAI-compatible service has a
         // large context and a bill, as any other cloud API (#374).
         let local = c.kind == BackendKind::OpenaiCompatible && base.is_none_or(detect::on_this_network);
+        let limit = stream_limit(&e.options);
+        let with_limit = |mut o: openai::OpenAi| {
+            o.stream_limit = limit;
+            Box::new(o) as Box<dyn ChatModel>
+        };
         let model: Box<dyn ChatModel> = match c.kind {
             BackendKind::Anthropic => {
                 let mut a = anthropic::Anthropic::new(base, self.key_for(e)?, &c.model);
                 a.fallbacks = e.options.fallbacks_enabled.unwrap_or(true);
+                a.stream_limit = limit;
                 Box::new(a)
             }
-            BackendKind::Openai => Box::new(openai::OpenAi::official(base, self.key_for(e)?, &c.model)),
-            BackendKind::Openrouter => Box::new(openai::OpenAi::openrouter(base, self.key_for(e)?, &c.model)),
-            BackendKind::Gemini => Box::new(openai::OpenAi::gemini(base, self.key_for(e)?, &c.model)),
+            BackendKind::Openai => with_limit(openai::OpenAi::official(base, self.key_for(e)?, &c.model)),
+            BackendKind::Openrouter => with_limit(openai::OpenAi::openrouter(base, self.key_for(e)?, &c.model)),
+            BackendKind::Gemini => with_limit(openai::OpenAi::gemini(base, self.key_for(e)?, &c.model)),
             BackendKind::OpenaiCompatible => {
                 let base = base.unwrap_or("http://127.0.0.1:11434/v1");
                 let key = self.keys.get(&c.name).or_else(|| go_env_key(base).or_else(|| providers::env_key(base)));
                 let mut o = compatible_client(&c.name, base, key, &c.model, &self.session_id());
                 o.react = e.options.react_fallback.unwrap_or(false);
-                Box::new(o)
+                with_limit(o)
             }
             BackendKind::AgentCli => return Err(ToolError::invalid(format!("{} is an agent app, not an API backend.", c.name))),
         };

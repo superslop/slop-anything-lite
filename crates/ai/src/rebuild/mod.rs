@@ -21,6 +21,7 @@ use crate::cli_agents::{Builder, CliSpec};
 use crate::{AgentEvent, AiHub, BackendKind, Conversation, Role};
 use craft_anything_engine::inbox::{Answer, Inbox, InboxDir, Request};
 use craft_anything_engine::project::{Project, Purpose};
+use craft_anything_engine::questions::AskedQuestion;
 use craft_anything_engine::workspace::progress::{AppFingerprintCache, BuildProgress};
 use craft_anything_engine::workspace::{CheckResult, ProjectUsage, Status, TargetRef, Workspace};
 use craft_anything_engine::{CallOptions, Caller, CancelToken, Engine, ToolOutput};
@@ -151,6 +152,10 @@ pub struct RunOptions {
     pub adapters: crate::cli_agents::AgentAdapters,
     /// Told after each event (the app repaints).
     pub wake: Wake,
+    /// The run's mode when the caller knows it and the session may be busy (a tool starts a run).
+    /// A free session is read first; this is the fallback while it is held; the saved settings
+    /// are the last fallback.
+    pub clean_room: Option<bool>,
 }
 
 impl Default for RunOptions {
@@ -168,6 +173,7 @@ impl Default for RunOptions {
             kinds: KindRegistry::built_in(),
             adapters: Default::default(),
             wake: Wake::default(),
+            clean_room: None,
         }
     }
 }
@@ -183,6 +189,25 @@ pub struct Note {
     pub shown: String,
     /// The pictures attached to it (their copies in the project), for the feed's history.
     pub pictures: Vec<PathBuf>,
+    /// The Just-ask answers the note's hand-over file carries (see [`RebuildRun::add_note`]), so
+    /// they're marked told when the builder reads the note or when the after-turn path sends it.
+    /// The raw note text stays in [`text`](Self::text), so a later run filters them by its mode.
+    pub questions: Vec<AskedQuestion>,
+}
+
+/// The note text with the latest Just-ask answers this mode may show. `skip` holds answers an
+/// earlier waiting note already carries, so two notes don't repeat the same ones.
+fn note_with_just_asked(text: String, ws: &Workspace, clean_room: bool, skip: &[AskedQuestion]) -> (String, Vec<AskedQuestion>) {
+    let asked: Vec<AskedQuestion> =
+        craft_anything_engine::questions::untold(ws, !clean_room).into_iter().filter(|q| !skip.iter().any(|s| same_question(s, q))).collect();
+    if asked.is_empty() {
+        return (text, asked);
+    }
+    (format!("{}{text}", just_asked(&asked)), asked)
+}
+
+fn same_question(a: &AskedQuestion, b: &AskedQuestion) -> bool {
+    a.at_ms == b.at_ms && a.question == b.question
 }
 
 /// A running (or finished) rebuild.
@@ -194,6 +219,8 @@ pub struct RebuildRun {
     preview: Arc<Mutex<Option<StaticServer>>>,
     /// What the person added while it works; the agent reads them at its next step.
     notes: Arc<Mutex<Vec<Note>>>,
+    /// The mode this run started in, so a note carries only the Just-ask answers that mode may see.
+    clean_room: bool,
     /// The project's conversation, kept in its folder.
     feed: Arc<Mutex<feed::FeedLog>>,
     pub root: PathBuf,
@@ -206,6 +233,15 @@ impl RebuildRun {
     pub fn start(hub: &AiHub, ws: Workspace, opts: RunOptions) -> Result<RebuildRun, ToolError> {
         let cfg = hub.config();
         let entry = builder_backend(&cfg, opts.backend.as_deref().or_else(|| project_builder(&cfg, &ws)))?;
+        // The person's choice of mode is a session setting. A run that waited its turn uses the mode
+        // now, not the one when it was queued; a tool holds the session while it starts a run, so it
+        // passes the mode instead, and the saved settings are the last fallback.
+        let clean_room = hub
+            .engine
+            .try_session()
+            .map(|s| s.clean_room())
+            .or(opts.clean_room)
+            .unwrap_or_else(|| !craft_anything_engine::Settings::load_from(&hub.settings_path()).deep_mode);
         // An API backend builds with our own agent loop and the Build tools; its conversation is
         // kept in the project and continued by follow-ups (a fresh build starts a new one).
         let api = match entry.config.kind {
@@ -296,20 +332,39 @@ impl RebuildRun {
             })
             .map_err(|e| ToolError::internal(e.to_string()))?;
         let activity = feed.lock().unwrap_or_else(PoisonError::into_inner).activity();
-        Ok(RebuildRun { rx, stop, inbox, running, preview, notes, feed, root, started: Instant::now(), activity })
+        Ok(RebuildRun { rx, stop, inbox, running, preview, notes, clean_room, feed, root, started: Instant::now(), activity })
     }
 
     /// Add something while it works; the agent reads it at its next step, and only then does it
     /// join the feed (as `shown`, with `pictures`). Returns its id, to take it back with `unsend`
     /// until then.
+    ///
+    /// The hand-over file also carries the latest Just-ask answers this mode may show, so a
+    /// hand-over that bypasses the next message (Claude Code's tool hook) still has the context.
+    /// The in-memory text stays raw, and the answers are marked told only when the note is read or
+    /// sent.
     pub fn add_note(&self, text: String, shown: String, pictures: Vec<PathBuf>) -> u64 {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut file_text = text.clone();
+        let mut questions = Vec::new();
+        if !text.trim().is_empty() {
+            // A note already waiting carries what it carries; this one adds only what's new.
+            let waiting: Vec<AskedQuestion> = {
+                let notes = self.notes.lock().unwrap_or_else(PoisonError::into_inner);
+                notes.iter().flat_map(|n| n.questions.iter().cloned()).collect()
+            };
+            if let Ok(ws) = Workspace::open(&self.root) {
+                (file_text, questions) = note_with_just_asked(file_text, &ws, self.clean_room, &waiting);
+            }
+        }
         // Also left for an agent that takes notes at its next step; without it, after the turn.
-        if let Err(e) = notes::hand_over(&notes::notes_dir(self.inbox.dir()), id, &text) {
+        // The in-memory note keeps the raw text: if a later run takes it, that run filters the
+        // answers by its own mode instead of inheriting this run's.
+        if let Err(e) = notes::hand_over(&notes::notes_dir(self.inbox.dir()), id, &file_text) {
             log::warn!("A note waits for the builder's turn to end: {}", e.message);
         }
-        self.notes.lock().unwrap_or_else(PoisonError::into_inner).push(Note { id, text, shown, pictures });
+        self.notes.lock().unwrap_or_else(PoisonError::into_inner).push(Note { id, text, shown, pictures, questions });
         id
     }
 
@@ -335,7 +390,8 @@ impl RebuildRun {
         self.notes.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
-    /// Notes the agent never got to (the run ended first), to send as the next message.
+    /// Notes the agent never got to (the run ended first), to send as the next message. Their
+    /// raw text leaves the Just-ask answers to the next run's own mode and message.
     pub fn take_notes(&self) -> Vec<Note> {
         std::mem::take(&mut *self.notes.lock().unwrap_or_else(PoisonError::into_inner))
     }
@@ -536,8 +592,9 @@ impl Worker {
         Ok(())
     }
 
-    /// The prompt for notes the person added while the agent worked, if there are any.
-    fn added(&self, ws: &mut Workspace) -> Option<String> {
+    /// The prompt for notes the person added while the agent worked, if there are any, and the
+    /// Just-ask answers it carries so they're marked told once the turn finishes.
+    fn added(&self, ws: &mut Workspace, deep: bool) -> Option<(String, Vec<AskedQuestion>)> {
         let mut notes = std::mem::take(&mut *self.notes.lock().unwrap_or_else(PoisonError::into_inner));
         if notes.is_empty() {
             return None;
@@ -556,8 +613,16 @@ impl Worker {
         }
         // A cancelled step can't be reported, but the notes go in either way.
         let _ = self.step(ws, Step::Build, Status::Building, "Reading what you added…");
+        let attached: Vec<AskedQuestion> = notes.iter().flat_map(|n| n.questions.iter().cloned()).collect();
+        // A note taken before the person asked something carries no answer for it; put the
+        // remaining ones before the notes so the builder has both in this turn.
+        let extra: Vec<AskedQuestion> =
+            craft_anything_engine::questions::untold(ws, deep).into_iter().filter(|q| !attached.iter().any(|a| same_question(a, q))).collect();
+        let mut questions = attached;
+        questions.extend(extra);
+        let context = just_asked(&questions);
         let texts: Vec<String> = notes.into_iter().map(|n| n.text).collect();
-        Some(added_prompt(&texts) + &pictures_reminder(ws))
+        Some((context + &added_prompt(&texts) + &pictures_reminder(ws), questions))
     }
 
     /// Decides an ACP builder's permission requests with the same policy Claude Code's approval
@@ -833,7 +898,8 @@ impl Worker {
                     progress.save(&ws.root)?;
                 }
                 // What the person added while the agent worked goes in before anything else.
-                if let Some(p) = self.added(ws) {
+                if let Some((p, more)) = self.added(ws, deep) {
+                    asked.extend(more);
                     progress.reset();
                     progress.save(&ws.root)?;
                     ws.manifest.not_working_checks = 0;
@@ -859,7 +925,8 @@ impl Worker {
             for c in &checks {
                 self.emit(RunEvent::Checked(c.clone()));
             }
-            if let Some(p) = self.added(ws) {
+            if let Some((p, more)) = self.added(ws, deep) {
+                asked.extend(more);
                 progress.reset();
                 progress.save(&ws.root)?;
                 ws.manifest.not_working_checks = 0;
@@ -1195,6 +1262,12 @@ impl Worker {
         };
         let new_request = read.iter().any(|n| !n.text.trim().is_empty());
         for n in read {
+            // The agent's hook took the note, so the Just-ask answers in its text were told.
+            if !n.questions.is_empty()
+                && let Err(e) = craft_anything_engine::questions::mark_told(ws, &n.questions)
+            {
+                log::warn!("couldn't record which questions the builder was told: {}", e.message);
+            }
             notes::forget(&dir, n.id);
             self.emit(RunEvent::Note { shown: n.shown, pictures: n.pictures });
         }
@@ -1289,6 +1362,35 @@ const CHECK_BEFORE_REPLYING: &str = " Before you reply, check your build again w
 /// default builds it).
 pub fn project_builder<'a>(cfg: &crate::AiConfig, ws: &'a Workspace) -> Option<&'a str> {
     ws.manifest.builder.as_deref().filter(|n| cfg.get(n).is_some_and(|b| b.config.enabled))
+}
+
+/// A project's saved builder that is no longer usable, and the AI that builds in its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuilderReplacement {
+    /// The AI the project saved, which is off or gone.
+    pub saved: String,
+    /// The AI that builds in its place.
+    pub used: String,
+}
+
+/// When a project's saved builder is off or gone, who builds instead. An explicitly named backend
+/// is not a replacement: it is refused if unusable, and nothing falls back.
+pub fn builder_replacement(cfg: &crate::AiConfig, ws: &Workspace, explicit: Option<&str>) -> Option<BuilderReplacement> {
+    if explicit.is_some() {
+        return None;
+    }
+    let saved = ws.manifest.builder.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    if project_builder(cfg, ws).is_some() {
+        return None;
+    }
+    let used = builder_backend(cfg, None).ok()?.config.name;
+    (used != saved).then(|| BuilderReplacement { saved: saved.to_string(), used })
+}
+
+/// The words for a saved builder that was turned off or removed and the one building instead.
+/// English for now: the wording needs a native speaker's check before it joins the catalogs.
+pub fn replaced_builder_notice(saved: &str, used: &str) -> String {
+    format!("The AI chosen for this project ({saved}) is turned off or no longer set up. {used} builds instead.")
 }
 
 /// The backend that builds: the one named while it is set up and on, else the Builder role's,

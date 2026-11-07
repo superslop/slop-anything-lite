@@ -105,8 +105,9 @@ pub struct BackendOptions {
     /// `none` is an explicit choice, not the absence of an override.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_reasoning_effort: Option<CliReasoningEffort>,
-    /// Wall-clock limit in seconds for one agent CLI turn (default: 24 hours for a builder, which may
-    /// analyse and build a big game; 30 minutes for questions).
+    /// Wall-clock limit in seconds for one turn. An agent CLI's whole turn (default: 24 hours for a
+    /// builder, which may analyse and build a big game; 30 minutes for questions), or an API
+    /// backend's streamed answer (default: one hour; a slow local model may need longer).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     /// Agent CLIs that speak ACP (`cli_agents::acp::ACP_AGENTS`): chat over it, one agent process

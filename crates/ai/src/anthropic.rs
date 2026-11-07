@@ -38,6 +38,8 @@ pub struct Anthropic {
     pub model: String,
     /// Send the server-side fallback header and body field.
     pub fallbacks: bool,
+    /// How long one streamed answer may take.
+    pub stream_limit: std::time::Duration,
 }
 
 impl Anthropic {
@@ -47,6 +49,7 @@ impl Anthropic {
             api_key,
             model: if model.is_empty() { DEFAULT_MODEL.to_string() } else { model.to_string() },
             fallbacks: true,
+            stream_limit: http::STREAM_BODY,
         }
     }
 
@@ -311,7 +314,7 @@ impl StreamState {
 
 impl ChatModel for Anthropic {
     fn turn(&mut self, req: &TurnRequest<'_>, on_delta: &mut dyn FnMut(Delta), stop: &Stop) -> Result<TurnResult, ToolError> {
-        let agent = http::stream_agent();
+        let agent = http::stream_agent(self.stream_limit);
         let reader = http::post_json(&agent, "Anthropic", &self.url("messages"), &self.headers(), &self.body(req))?;
         let mut state = StreamState::default();
         http::parse_sse(reader, |ev| {

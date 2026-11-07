@@ -2054,6 +2054,30 @@ fn a_projects_saved_time_and_ai_use_show_beside_it_and_the_session_total_in_the_
 }
 
 #[test]
+fn a_big_cost_doesnt_paint_over_its_caption() {
+    use craft_anything_engine::workspace::ProjectUsage;
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().to_path_buf();
+    ProjectUsage::update(&root, |u| {
+        u.work_ms = 725_000;
+        u.add_turn(1_180_000, 42_000, Some(13_021.36), true);
+    })
+    .unwrap();
+    let mut h = harness(move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        demo::fill_project(&mut a);
+        if let Some(ws) = a.workspace.as_mut() {
+            ws.root = root.clone();
+        }
+        a
+    });
+    h.run_steps(3);
+    let caption = h.get_by_label("AI cost (estimate)").rect();
+    let value = h.get_by_label("about $13021.36").rect();
+    assert!(!caption.intersects(value), "{caption:?} and {value:?}");
+}
+
+#[test]
 fn ghidras_memory_is_automatic_until_the_person_sets_it() {
     let mut h = harness_sized(egui::vec2(1280.0, 1000.0), || {
         let mut a = demo::app(demo::engine(Mode::Beginner, true));
@@ -2582,6 +2606,59 @@ fn make_says_who_builds_and_a_picked_builder_stays_with_the_project() {
     h.state_mut().pause();
     assert!(runs.finish(&root));
     h.run_steps(2);
+}
+
+#[test]
+fn a_turned_off_make_choice_says_who_builds_instead() {
+    let mut h = harness(|| {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.backends.push(BackendConfig {
+            name: "Off".into(),
+            kind: BackendKind::Anthropic,
+            model: "test-model".into(),
+            base_url: None,
+            ssh_host: None,
+            enabled: false,
+        });
+        a.state.make.ai = Some("Off".into());
+        a
+    });
+    h.run_steps(3);
+    // The stale draft goes back to Automatic, and the toast says who builds instead.
+    assert!(h.state().state.make.ai.is_none());
+    assert_eq!(h.get_all_by_label("Built by").last().unwrap().value().as_deref(), Some("Automatic (Claude)"));
+    assert!(h.state().state.toasts.iter().any(|(t, err)| !*err && t.contains("Off") && t.contains("Claude")), "{:?}", h.state().state.toasts);
+}
+
+#[test]
+fn a_turned_off_or_removed_saved_builder_says_who_builds_instead() {
+    let mut h = harness(|| {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.backends.push(BackendConfig {
+            name: "Off".into(),
+            kind: BackendKind::Anthropic,
+            model: "test-model".into(),
+            base_url: None,
+            ssh_host: None,
+            enabled: false,
+        });
+        a
+    });
+    h.run_steps(2);
+
+    // A turned-off saved builder: the default builds, and the person is told which one.
+    assert_eq!(h.state_mut().builder_backend(Some("Off")).as_deref(), Some("Claude"));
+    assert!(h.state().state.toasts.iter().any(|(t, err)| !*err && t.contains("Off") && t.contains("Claude")), "{:?}", h.state().state.toasts);
+
+    // A removed one too.
+    assert_eq!(h.state_mut().builder_backend(Some("Gone")).as_deref(), Some("Claude"));
+    assert!(h.state().state.toasts.iter().any(|(t, err)| !*err && t.contains("Gone") && t.contains("Claude")), "{:?}", h.state().state.toasts);
+
+    // An enabled choice, and Automatic, say nothing.
+    let quiet = h.state().state.toasts.len();
+    assert_eq!(h.state_mut().builder_backend(Some("Claude")).as_deref(), Some("Claude"));
+    assert_eq!(h.state_mut().builder_backend(None).as_deref(), Some("Claude"));
+    assert_eq!(h.state().state.toasts.len(), quiet, "no replacement notice when nothing was replaced");
 }
 
 #[test]

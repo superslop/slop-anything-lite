@@ -37,7 +37,10 @@ name = "Go"
 found_by = ["go.mod"]
 build = ["go", "build", "./..."]
 test = ["go", "test", "./..."]
-launch = [{ file = "main.go", command = ["go", "run", "."] }]
+launch = [
+    { file = "main.go", command = ["go", "run", "."] },
+    { file = "cmd/*/main.go", command = ["go", "run", "{package}"] },
+]
 
 [[toolchain]]
 name = ".NET"

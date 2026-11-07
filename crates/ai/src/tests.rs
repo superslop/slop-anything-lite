@@ -7,6 +7,15 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
+/// #1096: an AI's timeout_secs sets how long its streamed answer may take; unset or 0 is an hour.
+#[test]
+fn an_ais_own_timeout_bounds_its_streamed_answer() {
+    let with = |timeout_secs| BackendOptions { timeout_secs, ..Default::default() };
+    assert_eq!(stream_limit(&with(None)), http::STREAM_BODY);
+    assert_eq!(stream_limit(&with(Some(0))), http::STREAM_BODY);
+    assert_eq!(stream_limit(&with(Some(4 * 3600))), std::time::Duration::from_secs(4 * 3600));
+}
+
 /// The model list lives at /v1 on the service root, not under the chat path's /openai/v1.
 #[test]
 fn opencode_go_lists_models_at_the_documented_url() {

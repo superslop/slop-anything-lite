@@ -134,6 +134,9 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
         }
     };
     println!("Project: {}", ws.root.display());
+    // The saved builder may be off or gone; say who builds once the run has started, so a failed
+    // start doesn't claim an AI that never ran.
+    let replacement = rebuild::builder_replacement(&hub.config(), &ws, a.backend.as_deref());
     // A follow-up shows in the project's feed as the person typed it.
     let shown = message.clone();
     let good_enough = engine.session().settings.build.good_enough;
@@ -149,9 +152,13 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
         beginner: !cli.json,
         faithful: a.faithful,
         kinds,
+        clean_room: Some(engine.session().clean_room()),
         ..RunOptions::default()
     };
     let mut run = RebuildRun::start(&hub, ws, opts)?;
+    if let Some(replacement) = replacement {
+        eprintln!("{}", rebuild::replaced_builder_notice(&replacement.saved, &replacement.used));
+    }
     let mut ok = false;
     let mut line_open = false;
     loop {
