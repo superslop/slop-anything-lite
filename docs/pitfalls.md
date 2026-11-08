@@ -161,6 +161,12 @@ Negative probes use loopback port zero so another fixture cannot acquire a relea
 A controlled fragmented request reproduced the fixture defect; the old CI log did not preserve
 the probe's underlying error, so it does not establish that failure's cause.
 
+**A socket option set after the peer reset it.** A preview test set its clients' read timeout
+after stopping the server. macOS answers `setsockopt` with `Invalid argument` on a socket closed in
+both directions (a reset, or the peer's FIN after our own `shutdown(Write)`); Linux doesn't check,
+so the test failed only on Macs. Set socket options right after connecting, before anything can
+close the connection.
+
 **A script written and run at once.** Tests that write a stand-in program and start it failed now
 and then on Linux with "Text file busy": another test thread was starting a child at that moment,
 and the child still held the new file open for writing. Starting a program goes through
@@ -170,6 +176,11 @@ instead.
 **Proving a refactor changed nothing.** Unit tests that check substrings can miss changed prompts.
 For a refactor that must keep output identical, dump the outputs for every combination before and
 after and compare them byte for byte (done for every brief across 162 combinations in R1.1).
+
+**A guard phrase that matched the wording it protects.** A test that no blind builder is told to
+"look at the picture" failed on the new "you can't look at the pictures in reference/". Make a
+forbidden phrase the instruction's exact words, check each one still appears in what the other
+case is sent (or the guard goes stale without failing), and break the code once to see it fail.
 
 **A Windows-only test that no check ran.** #748 added a second Antigravity folder to the search
 path; the Windows test that counts those folders wasn't updated, and `main` stayed green because CI
@@ -626,6 +637,11 @@ on Windows (`write_atomic`); show errors where the person is looking.
 clients. The journal only redacts by field name. When a setting can hold a secret, hide its value
 in every tool that prints settings, and test that it doesn't appear.
 
+**A secret check that matched a word inside a name.** `cargo xtask secrets` took any variable
+with `AUTH` in its name as a secret; git sets `GIT_AUTHOR_NAME` while the hook runs, so a contributor
+whose git name is their handle couldn't commit their own roadmap claim. Name the exceptions
+(`NOT_SECRET`) rather than loosening the word, and test both sides with a list of variables.
+
 **Secret files kept out only by one person's gitignore.** `.env` files and
 `.claude/settings.local.json` were ignored by a contributor's global gitignore, not the repo's, so
 anyone else could have committed them. Ignore secret and local files in the repo's `.gitignore`,
@@ -857,6 +873,14 @@ parser between JSON recovery and ReAct: count the opener, require a standalone c
 least that long, and reject an earlier matching close followed by more text. Shorter backtick
 lines inside a longer fence are content. Test both paths and the next HTTP request, including
 malformed suffixes and non-call JSON examples whose strings contain protocol markers.
+
+**A call the server couldn't read, taken for the answer.** A llama.cpp server turns a Qwen
+model's `<tool_call><function=…>` markup into a real call only when it names an offered tool;
+otherwise it hands the markup back as text. The loop read text with no call as the final
+answer, so a 512k-window build that called `web_search` stopped its turn after 3 minutes and
+failed its check. Text recovery that only knows the formats seen so far ends a turn silently on
+the next one: read a model's own call format, and when it names a tool it doesn't have, tell it
+so and name the ones it has, rather than ending.
 
 **A view that asked to be scrolled on every frame.** The command palette called `scroll_to_me` on
 the selected row each frame, so the wheel's scroll was pulled back to it at once and the list

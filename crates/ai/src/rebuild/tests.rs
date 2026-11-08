@@ -19,10 +19,10 @@ fn kind_of(request: &str, target: &TargetRef, stack: &str) -> &'static str {
     KindRegistry::built_in().detect(request, target, stack).unwrap().id()
 }
 fn brief(ws: &Workspace, k: &str, deep: bool, ghidra: bool, editor: Option<&Path>, assets: bool, extra: Option<&str>) -> String {
-    super::brief(kind(k).as_ref(), &BriefCx { ws, deep, ghidra, editor, assets, image_model: None }, extra)
+    super::brief(kind(k).as_ref(), &BriefCx { ws, deep, ghidra, editor, assets, image_model: None, sees_pictures: true }, extra)
 }
 fn refine(k: &str, check: &CheckResult) -> String {
-    kind(k).refine(check)
+    kind(k).refine(check, true)
 }
 fn follow_up(message: &str, k: &str) -> String {
     super::follow_up(message, kind(k).as_ref())
@@ -182,6 +182,38 @@ fn thai_requests_keep_their_project_kind() {
         assert_eq!(choose(request, &TargetRef::None), ("website", stacks::BUILDERS_CHOICE), "{request}");
     }
     assert_eq!(choose("แอปเครื่องคิดเลข", &TargetRef::None).0, "app", "แอปเครื่องคิดเลข");
+}
+
+#[test]
+fn estonian_requests_keep_their_project_kind() {
+    for request in ["Lihtne usumäng", "Sama mäng, aga edetabeliga", "Loo mäng, mis mängib nii", "Loo mänge lastele"] {
+        assert_eq!(choose(request, &TargetRef::None), ("game", "Unity"), "{request}");
+    }
+    for request in ["Veebileht minu pagaritöökojale", "Loo see veebileht uuesti", "Veebileht minu töökojale"] {
+        assert_eq!(choose(request, &TargetRef::None), ("website", stacks::BUILDERS_CHOICE), "{request}");
+    }
+    assert_eq!(choose("Sama rakendus, aga lihtsam", &TargetRef::None).0, "app");
+    // A game noun keeps its kind in compounds and inflected forms; the verb "mängima" (to play)
+    // and toy compounds do not.
+    for request in ["Lauamäng", "Arvutimängu uus versioon"] {
+        assert_eq!(choose(request, &TargetRef::None).0, "game", "{request}");
+    }
+    for request in ["Loo muusikat mängiv rakendus", "Mänguasjapood"] {
+        assert_eq!(choose(request, &TargetRef::None).0, "app", "{request}");
+    }
+    // Punctuation and newlines still expose the website cues, and a browser is not a website.
+    for request in ["Loo:\nveebileht pagaritöökojale", "Kodulehele"] {
+        assert_eq!(choose(request, &TargetRef::None).0, "website", "{request}");
+    }
+    assert_eq!(choose("Ava veebilehitseja", &TargetRef::None).0, "app");
+    // The head of the main clause decides when both are named: a game used as the source or
+    // topic is not the build.
+    for request in ["Tee sellest mängust veebileht", "Mängude veebileht", "Loo veebileht, kus müüakse mänge", "Veebileht mängust"] {
+        assert_eq!(choose(request, &TargetRef::None).0, "website", "{request}");
+    }
+    for request in ["Tee sellest veebilehest mäng", "Loo mäng nimega Veebileht", "Mäng veebilehega"] {
+        assert_eq!(choose(request, &TargetRef::None).0, "game", "{request}");
+    }
 }
 
 #[test]
@@ -425,7 +457,7 @@ fn notes_added_while_it_works_reach_the_agent_at_its_next_step() {
         faithful: false,
         reset_progress_after_notes: false,
     };
-    assert!(w.added(&mut ws, true).is_none(), "nothing added, nothing to say");
+    assert!(w.added(&mut ws, true, true).is_none(), "nothing added, nothing to say");
     use craft_anything_engine::questions::{self, AskedQuestion};
     let asked = AskedQuestion { deep: false, ..AskedQuestion::new("where is the score kept".into(), "In src.".into(), true, "Stand-in".into(), None, 0) };
     questions::add(&ws, asked.clone()).unwrap();
@@ -433,7 +465,7 @@ fn notes_added_while_it_works_reach_the_agent_at_its_next_step() {
     let mut first = note(1, "Make it faster");
     first.questions = vec![asked];
     notes.lock().unwrap().extend([first, note(2, "A blue sky")]);
-    let (p, more) = w.added(&mut ws, true).unwrap();
+    let (p, more) = w.added(&mut ws, true, true).unwrap();
     assert!(p.contains("where is the score kept") && p.contains("- Make it faster (pictures: a.png)\n- A blue sky"), "{p}");
     assert_eq!(more.len(), 1, "the question is marked told after the turn");
     assert!(notes.lock().unwrap().is_empty(), "each note goes in once");
@@ -519,14 +551,104 @@ fn pictures_of_the_original_reach_the_builder() {
     let d = tempfile::tempdir().unwrap();
     let ws = Workspace::create(d.path(), "Game", "Copy this game", TargetRef::None).unwrap();
     assert!(!brief(&ws, "game", false, false, None, false, None).contains("reference/picture"));
-    assert!(pictures_reminder(&ws).is_empty());
+    assert!(pictures_reminder(&ws, true).is_empty());
     let pic = d.path().join("shot.webp");
     std::fs::write(&pic, "x").unwrap();
     ws.add_references(&[pic]).unwrap();
     let b = brief(&ws, "game", false, false, None, false, None);
     assert!(b.contains("reference/picture-1.webp") && b.contains("--screenshot"), "{b}");
     assert!(!brief(&ws, "website", false, false, None, false, None).contains("--screenshot"), "websites are photographed for it");
-    assert!(pictures_reminder(&ws).contains("1 picture(s)"));
+    assert!(pictures_reminder(&ws, true).contains("1 picture(s)"));
+}
+
+/// What a builder that can't look at pictures (the API loop) is told to open or look at a
+/// picture with. A sighted builder's prompts say these; a blind one's never do (R5.4).
+const LOOK_AT_A_PICTURE: &[&str] = &[
+    "Read tool and look",
+    "with the Read tool to learn the style",
+    "Open every one with the Read tool",
+    "open that picture with Read",
+    "Open each pair",
+    "open any you haven't looked at",
+    // The --screenshot contract's old wording, kept here so it can't come back for a blind builder.
+    "now.png) and look at the picture",
+    "open it with Read and look at it",
+    "from the pictures and how it plays",
+    "use the pictures in reference/",
+    "Work from these pictures",
+    "so match how they look",
+];
+
+fn said_to_look(text: &str) -> Option<&'static str> {
+    LOOK_AT_A_PICTURE.iter().copied().find(|p| text.contains(p))
+}
+
+/// R5.4: every first message, refinement and reminder a blind builder can get, for every kind,
+/// target, mode and with or without the person's pictures, sends it to no picture, and each says
+/// what to use instead.
+#[test]
+fn a_builder_that_cant_see_is_never_sent_to_a_picture() {
+    let sees_only = |ws: &Workspace, k: &str, deep: bool, assets: bool, sees_pictures: bool| {
+        super::brief(kind(k).as_ref(), &BriefCx { ws, deep, ghidra: false, editor: None, assets, image_model: None, sees_pictures }, None)
+    };
+    let mut checked = 0;
+    // Everything a sighted builder is sent, to show the guard's phrases are still what it's told.
+    let mut sighted_all = String::new();
+    for k in KindRegistry::built_in().ids() {
+        for target in ["none", "web", "local"] {
+            for (deep, assets, pics, generated) in (0..16).map(|b| (b & 1 != 0, b & 2 != 0, b & 4 != 0, b & 8 != 0)) {
+                let d = tempfile::tempdir().unwrap();
+                let t = match target {
+                    "web" => TargetRef::Website { url: "https://example.com".into() },
+                    "local" => TargetRef::Local { path: d.path().join("orig").join("game.exe") },
+                    _ => TargetRef::None,
+                };
+                let mut ws = Workspace::create(d.path(), "P", "Make it", t).unwrap();
+                ws.manifest.generate_assets = generated;
+                if pics {
+                    let p = d.path().join("shot.png");
+                    std::fs::write(&p, "x").unwrap();
+                    ws.add_references(&[p]).unwrap();
+                }
+                let case = format!("{k} {target} deep={deep} assets={assets} pictures={pics} generated={generated}");
+                let blind = sees_only(&ws, k, deep, assets, false);
+                assert_eq!(said_to_look(&blind), None, "{case}:\n{blind}");
+                sighted_all.push_str(&sees_only(&ws, k, deep, assets, true));
+                sighted_all.push_str(&pictures_reminder(&ws, true));
+                if pics {
+                    assert!(blind.contains("you can't look at pictures") && blind.contains("core_person_ask"), "{case}:\n{blind}");
+                    assert_eq!(said_to_look(&pictures_reminder(&ws, false)), None, "{case}");
+                    assert!(pictures_reminder(&ws, false).contains("you can't look at them"), "{case}");
+                }
+                if target == "web" && k == "website" {
+                    assert!(blind.contains("`layouts`") && !blind.contains("screenshot and `layouts`"), "{case}:\n{blind}");
+                }
+                if target == "local" && !deep {
+                    assert!(blind.contains("capture/ui-tree.json"), "{case}:\n{blind}");
+                }
+                checked += 1;
+            }
+        }
+        let mut c = CheckResult::new("x", 3, true, String::from("the note"));
+        assert_eq!(said_to_look(&kind(k).refine(&c, false)), None, "{k}");
+        c.similarity = Some(71.0);
+        let blind = kind(k).refine(&c, false);
+        assert_eq!(said_to_look(&blind), None, "{k}: {blind}");
+        if k == "website" {
+            assert!(blind.contains("checks/round-3/capture.json") && blind.contains("capture/capture.json"), "{blind}");
+        }
+        sighted_all.push_str(&kind(k).refine(&c, true));
+    }
+    assert!(checked >= 100, "only {checked} cases");
+    sighted_all.push_str(&super::kinds::screenshot::contract(true));
+    for phrase in LOOK_AT_A_PICTURE.iter().filter(|p| **p != "now.png) and look at the picture") {
+        assert!(sighted_all.contains(phrase), "{phrase:?} is no longer said to any builder: the guard is stale");
+    }
+    // The --screenshot contract, also sent inside a failed check's note.
+    assert_eq!(said_to_look(&super::kinds::screenshot::contract(false)), None);
+    assert_eq!(said_to_look(super::kinds::screenshot::SCREENSHOT_CONTRACT), None, "a check's note may reach a blind builder");
+    // The API loop's own note says it once; agent apps aren't told.
+    assert!(!API_BUILDER.contains("can't look at pictures") && BLIND_BUILDER.contains("can't look at pictures"));
 }
 
 mod typed_retries {
@@ -583,6 +705,7 @@ mod typed_retries {
         }
     }
 
+    /// A retryable CLI failure is retried without asking for a fresh external session.
     #[test]
     fn transient_failures_retry_without_requiring_an_external_session() {
         for saved in [false, true] {
@@ -593,7 +716,7 @@ mod typed_retries {
             let mut agent = FailingConversation::new([Some(failure), None], saved);
             agent.message = "Authentication and billing service restarting. Please retry in 90s.";
             let mut waits = Vec::new();
-            let result = worker.turn_with_wait(&mut ws, &mut agent, "Build the requested app", None, |_, seconds| {
+            let result = worker.turn_with_wait(&mut ws, &mut agent, "Build the requested app", true, None, |_, seconds| {
                 waits.push(seconds);
                 Ok(())
             });
@@ -605,6 +728,7 @@ mod typed_retries {
         }
     }
 
+    /// Typed setup errors stop at once, even when their text contains a retry hint.
     #[test]
     fn setup_errors_do_not_retry_even_with_a_wait_in_the_message() {
         for kind in [
@@ -620,12 +744,13 @@ mod typed_retries {
             let mut worker = check_worker(&ws, false);
             let mut agent = FailingConversation::new([Some(TurnFailure::new(kind))], true);
             agent.message = "需要修改设置。Please retry in 1s.";
-            let result = worker.turn_with_wait(&mut ws, &mut agent, "Build it", None, |_, _| panic!("a setup error must not wait and retry"));
+            let result = worker.turn_with_wait(&mut ws, &mut agent, "Build it", true, None, |_, _| panic!("a setup error must not wait and retry"));
             assert!(result.is_err(), "{kind:?}");
             assert_eq!(agent.sent.len(), 1, "{kind:?}");
         }
     }
 
+    /// Retries stop at the cap, and a cancelled wait sends no further turn.
     #[test]
     fn retries_are_bounded_and_cancelled_waits_send_nothing_more() {
         assert_eq!(RunOptions::default().max_rounds, 6, "room to keep fixing until it works");
@@ -637,7 +762,7 @@ mod typed_retries {
         let mut waits = Vec::new();
         assert!(
             worker
-                .turn_with_wait(&mut ws, &mut agent, "Build it", None, |_, seconds| {
+                .turn_with_wait(&mut ws, &mut agent, "Build it", true, None, |_, seconds| {
                     waits.push(seconds);
                     Ok(())
                 })
@@ -647,7 +772,7 @@ mod typed_retries {
         assert_eq!(waits, [30, 60, 90]);
         let mut agent = FailingConversation::new([Some(failure)], false);
         let error = worker
-            .turn_with_wait(&mut ws, &mut agent, "Build it", None, |stop, _| {
+            .turn_with_wait(&mut ws, &mut agent, "Build it", true, None, |stop, _| {
                 stop.cancel();
                 stop.check()
             })
@@ -727,7 +852,7 @@ mod typed_retries {
         let mut agent = RateLimited { sent: 0, first_poll: false };
         let mut waits = Vec::new();
         let error = worker
-            .turn_with_wait(&mut ws, &mut agent, "Build the app", None, |_, seconds| {
+            .turn_with_wait(&mut ws, &mut agent, "Build the app", true, None, |_, seconds| {
                 waits.push(seconds);
                 Ok(())
             })
@@ -738,6 +863,8 @@ mod typed_retries {
         assert!(error.message.contains(".answer.json"), "the original local failure is retained: {error:?}");
     }
 
+    /// A rate-limited API turn continues its history without repeating the person's message or
+    /// completed tools.
     #[test]
     fn an_api_rate_limit_continues_history_without_repeating_users_or_completed_tools() {
         use crate::agent::tests::{Scripted, turn};
@@ -770,7 +897,7 @@ mod typed_retries {
             let mut waits = Vec::new();
             assert_eq!(
                 worker
-                    .turn_with_wait(&mut ws, &mut api, "Build the notes app", None, |_, seconds| {
+                    .turn_with_wait(&mut ws, &mut api, "Build the notes app", true, None, |_, seconds| {
                         waits.push(seconds);
                         Ok(())
                     })
@@ -793,6 +920,7 @@ mod typed_retries {
         }
     }
 
+    /// Write an executable stand-in CLI and start a conversation with it.
     #[cfg(unix)]
     fn executable_cli(ws: &Workspace, model: &str, script: &str) -> crate::cli_agents::CliConversation {
         use std::os::unix::fs::PermissionsExt;
@@ -815,6 +943,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// A failed required tool server stops the owned CLI instead of resuming its session.
     #[test]
     fn a_failed_required_tool_server_stops_the_owned_cli_without_resuming_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -831,7 +960,7 @@ mod typed_retries {
                 "sleep 5\nprintf 'unreachable' > continued-without-tools\n"
             ),
         );
-        let error = worker.turn_with_wait(&mut ws, &mut cli, "Build the app", None, |_, _| panic!("missing tools must not be retried")).unwrap_err();
+        let error = worker.turn_with_wait(&mut ws, &mut cli, "Build the app", true, None, |_, _| panic!("missing tools must not be retried")).unwrap_err();
         assert!(error.message.contains("tools did not start"), "{error:?}");
         assert_eq!(cli.last_failure().unwrap().kind, FailureKind::ToolsUnavailable);
         assert!(!cli.is_busy());
@@ -841,6 +970,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// A plain CLI's non-zero exit is retried by resuming the session it saved.
     #[test]
     fn a_plain_nonzero_cli_exit_resumes_its_saved_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -860,7 +990,7 @@ mod typed_retries {
             ),
         );
         let mut waits = Vec::new();
-        let result = worker.turn_with_wait(&mut ws, &mut cli, "Make a notes app", None, |_, seconds| {
+        let result = worker.turn_with_wait(&mut ws, &mut cli, "Make a notes app", true, None, |_, seconds| {
             waits.push(seconds);
             Ok(())
         });
@@ -875,6 +1005,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// A typed setup error is reported ahead of a non-zero exit.
     #[test]
     fn typed_cli_setup_errors_take_precedence_over_a_nonzero_exit() {
         for (code, kind) in
@@ -886,7 +1017,7 @@ mod typed_retries {
             let error = json!({"type":"assistant","error":code,"message":{"content":[{"type":"text","text":"Please retry in 1s."}]}});
             let script = format!("#!/bin/sh\ncat >/dev/null\nprintf 'attempt\\n' >> attempts\nprintf '%s\\n' '{error}'\nexit 1\n");
             let mut cli = executable_cli(&ws, "claude-code", &script);
-            let result = worker.turn_with_wait(&mut ws, &mut cli, "Make a notes app", None, |_, _| panic!("typed setup failures must not retry"));
+            let result = worker.turn_with_wait(&mut ws, &mut cli, "Make a notes app", true, None, |_, _| panic!("typed setup failures must not retry"));
             assert!(result.is_err(), "{kind:?}");
             assert_eq!(cli.last_failure().unwrap().kind, kind);
             assert_eq!(std::fs::read_to_string(ws.root.join("attempts")).unwrap(), "attempt\n");
@@ -895,6 +1026,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// OpenCode's typed rate limit is retried with the whole original request.
     #[test]
     fn opencode_retries_a_typed_rate_limit_with_its_whole_original_request() {
         let dir = tempfile::tempdir().unwrap();
@@ -916,7 +1048,7 @@ mod typed_retries {
         let mut waits = Vec::new();
         assert_eq!(
             worker
-                .turn_with_wait(&mut ws, &mut cli, "Make a notes app", None, |_, seconds| {
+                .turn_with_wait(&mut ws, &mut cli, "Make a notes app", true, None, |_, seconds| {
                     waits.push(seconds);
                     Ok(())
                 })
@@ -932,6 +1064,7 @@ mod typed_retries {
     }
 
     #[cfg(unix)]
+    /// An untyped OpenCode exit keeps its error and stops at the three-retry cap.
     #[test]
     fn an_untyped_opencode_exit_keeps_its_error_and_the_three_retry_cap() {
         let dir = tempfile::tempdir().unwrap();
@@ -944,7 +1077,7 @@ mod typed_retries {
         );
         let mut waits = Vec::new();
         let error = worker
-            .turn_with_wait(&mut ws, &mut cli, "Make a notes app", None, |_, seconds| {
+            .turn_with_wait(&mut ws, &mut cli, "Make a notes app", true, None, |_, seconds| {
                 waits.push(seconds);
                 Ok(())
             })
@@ -1110,7 +1243,8 @@ fn a_registered_kind_is_chosen_from_its_words_and_brings_its_checks() {
     let ws = Workspace::create(d.path(), "Deck", "Make slides", TargetRef::None).unwrap();
     let checks = kinds.get("slides").unwrap().checks(&ws);
     assert_eq!(checks.iter().map(|c| c.id()).collect::<Vec<_>>(), ["outline"]);
-    let b = super::brief(&SlidesKind, &BriefCx { ws: &ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None }, None);
+    let b =
+        super::brief(&SlidesKind, &BriefCx { ws: &ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: true }, None);
     assert!(b.contains("What to build: a slide deck."), "{b}");
 }
 
@@ -1247,7 +1381,7 @@ fn an_api_backend_builds_with_the_build_tools() {
     let slot = ModelSlot { name: "Scripted".into(), model: Box::new(script), local: false, effort: None, max_turns: 10, context_tokens: 0 };
     let enabled = std::collections::BTreeSet::from([craft_anything_engine::Toolset::Core, craft_anything_engine::Toolset::Build]);
     let mut api = ApiConversation::start_with(Arc::new(EngineHost(engine)), vec![slot], LoopConfig::default(), enabled).unwrap();
-    let reply = w.turn(&mut ws, &mut api, "Build it.", None).unwrap();
+    let reply = w.turn(&mut ws, &mut api, "Build it.", true, None).unwrap();
     assert_eq!(reply.trim(), "Built the notes app.");
     assert_eq!(std::fs::read_to_string(ws.app_dir().join("README.md")).unwrap(), "# Notes\n");
     assert!(ws.manifest.agent_session.is_none(), "an API loop has no session to resume");
@@ -1284,7 +1418,7 @@ fn other_pages_of_the_same_site_are_picked_from_its_links() {
     // The brief mentions the other pages only when some were captured.
     let d = tempfile::tempdir().unwrap();
     let ws = Workspace::create(d.path(), "Shop", "Clone it", TargetRef::Website { url: "https://shop.example.com/".into() }).unwrap();
-    let cx = |ws| BriefCx { ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None };
+    let cx = |ws| BriefCx { ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: true };
     assert!(kinds::WebsiteKind.brief_sections(&cx(&ws)).is_empty());
     std::fs::create_dir_all(ws.capture_dir()).unwrap();
     std::fs::write(ws.capture_dir().join(ROUTES_FILE), serde_json::to_vec(&r).unwrap()).unwrap();
@@ -2112,6 +2246,48 @@ mod picking_up_a_build {
         assert_eq!(Workspace::open(&ws.root).unwrap().manifest.agent_session.as_deref(), Some("session-1"));
     }
 
+    /// R2.9: a session saved in one mode is never continued in the other — a Clean room build
+    /// must not carry what a Deep one read — and one saved before the mode was kept counts as
+    /// Deep, so only Deep continues it.
+    #[test]
+    fn a_session_from_another_mode_is_not_continued() {
+        for (saved, deep, continued) in [
+            (Some(true), true, true),
+            (Some(true), false, false),
+            (Some(false), false, true),
+            (Some(false), true, false),
+            (None, true, true),
+            (None, false, false),
+        ] {
+            let b = bench();
+            let mut ws = worked_on(&b);
+            ws.manifest.agent_session_deep = saved;
+            ws.save().unwrap();
+            b.hub.engine.session().settings.deep_mode = deep;
+            let (ok, feed) = try_it(&b, &ws);
+            assert!(ok, "saved={saved:?}, deep={deep}: {feed:?}");
+            let told = std::fs::read_to_string(&b.prompts).unwrap();
+            assert_eq!(told.contains("Pick up where you left off"), continued, "saved={saved:?}, deep={deep}: {told}");
+            assert_eq!(told.contains("Their request"), !continued, "a fresh start gets the brief: {told}");
+        }
+    }
+
+    /// A saved session records the mode it ran in, and a lost one clears both.
+    #[test]
+    fn a_session_is_kept_with_the_mode_it_ran_in() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(d.path(), "x", "A thing", TargetRef::None).unwrap();
+        Worker::remember_session(&mut ws, Some("s1".into()), false).unwrap();
+        let m = Workspace::open(&ws.root).unwrap().manifest;
+        assert_eq!((m.agent_session.as_deref(), m.agent_session_deep), (Some("s1"), Some(false)));
+        Worker::remember_session(&mut ws, Some("s2".into()), true).unwrap();
+        let m = Workspace::open(&ws.root).unwrap().manifest;
+        assert_eq!((m.agent_session.as_deref(), m.agent_session_deep), (Some("s2"), Some(true)));
+        Worker::remember_session(&mut ws, None, true).unwrap();
+        let m = Workspace::open(&ws.root).unwrap().manifest;
+        assert_eq!((m.agent_session, m.agent_session_deep), (None, None), "a lost session leaves no mode behind");
+    }
+
     #[test]
     fn a_new_project_still_starts_from_the_top() {
         let b = bench();
@@ -2578,7 +2754,7 @@ fn a_resumed_game_builder_hears_the_asset_choice_as_it_is_now() {
     let mut ws = Workspace::create(d.path(), "Game", "A snake game", TargetRef::None).unwrap();
     let game = kind("game");
     fn cx(ws: &Workspace, assets: bool) -> BriefCx<'_> {
-        BriefCx { ws, deep: false, ghidra: false, editor: None, assets, image_model: None }
+        BriefCx { ws, deep: false, ghidra: false, editor: None, assets, image_model: None, sees_pictures: true }
     }
     assert!(game.follow_up_sections(&cx(&ws, true)).is_empty(), "off and never used: nothing to say");
     // Turned on after the first build, with a key: the follow-up carries the asset note and budget.
@@ -2774,7 +2950,7 @@ fn the_run_answers_the_builders_own_check_during_its_turn() {
         reset_progress_after_notes: false,
     };
     let mut builder = ChecksItsWork { root: ws.root.clone(), asked: None, reply: None };
-    let reply = w.turn(&mut ws, &mut builder, "Build it.", None).unwrap();
+    let reply = w.turn(&mut ws, &mut builder, "Build it.", true, None).unwrap();
     // The same check the run makes after a turn, as round 0, with what to do next.
     assert!(reply.starts_with("mechanics: failed") && reply.contains("no app/mechanics.json") && reply.contains("check again with rebuild_check"), "{reply}");
     assert!(ws.manifest.checks.is_empty(), "the builder's own check isn't a round");
@@ -2984,7 +3160,7 @@ fn a_note_the_builder_took_at_a_step_joins_the_feed_and_isnt_sent_again() {
     assert_eq!(shown, ["make the header blue"], "it joins the feed as soon as the builder took it");
     assert!(!notes::was_read(&dir, 1), "its files are gone");
     // After the turn, only the note nobody took is sent, and no hook can hand it over again.
-    let (follow, _) = w.added(&mut ws, true).unwrap();
+    let (follow, _) = w.added(&mut ws, true, true).unwrap();
     assert!(follow.contains("add a footer") && !follow.contains("make the header blue"), "{follow}");
     assert!(notes::claim(&dir).is_empty());
 }
@@ -3277,7 +3453,7 @@ fn a_session_left_on_another_computer_starts_a_new_one_from_the_project() {
         reset_progress_after_notes: false,
     };
     let first = resumed_elsewhere("THE BRIEF", &ws.manifest.last_reply, None);
-    let reply = w.turn(&mut ws, &mut agent, "The person asks: make it blue", Some(first)).unwrap();
+    let reply = w.turn(&mut ws, &mut agent, "The person asks: make it blue", true, Some(first)).unwrap();
     assert_eq!(reply.trim(), "Carried on: yes");
     let sent = std::fs::read_to_string(bin.path().join("claude.last")).unwrap();
     assert!(
@@ -3332,7 +3508,9 @@ fn a_missing_session_with_nothing_to_start_from_is_said_plainly() {
         faithful: false,
         reset_progress_after_notes: false,
     };
-    let e = w.turn_with_wait(&mut ws, &mut agent, "Carry on.", None, |_, _| panic!("a missing session without a fresh start must not be retried")).unwrap_err();
+    let e = w
+        .turn_with_wait(&mut ws, &mut agent, "Carry on.", true, None, |_, _| panic!("a missing session without a fresh start must not be retried"))
+        .unwrap_err();
     assert!(e.message.contains("isn't on this computer"), "{e:?}");
     assert!(ws.manifest.agent_session.is_none());
 }

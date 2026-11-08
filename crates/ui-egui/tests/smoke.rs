@@ -775,8 +775,9 @@ fn an_approval_that_cant_be_saved_isnt_shown_as_chosen() {
     });
     h.run_steps(2);
     // A newer Craft Anything saved it meanwhile: this one only reads it, so the choice is refused.
-    let newer = std::fs::read_to_string(&file).unwrap().replacen("\"version\": 3", "\"version\": 99", 1);
-    assert!(newer.contains("\"version\": 99"));
+    let current = craft_anything_engine::workspace::MANIFEST_VERSION;
+    let newer = std::fs::read_to_string(&file).unwrap().replacen(&format!("\"version\": {current}"), &format!("\"version\": {}", current + 1), 1);
+    assert!(newer.contains(&format!("\"version\": {}", current + 1)));
     std::fs::write(&file, newer).unwrap();
     h.state_mut().state.project_input = "/approvals push allow".into();
     h.run_steps(1);
