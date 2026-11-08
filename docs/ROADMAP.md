@@ -290,6 +290,16 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
 - [x] Limit the decision line above to what was measured (one RX 6900 XT, one driver, one Windows
       build) and say other Radeons and drivers aren't checked (#912 review)
       — claimed: 00xJS, branch docs/r5.2-radeon-idle-scope
+- [x] STATUS.md has rows twice, kept by squash merges of PRs that edited the same row: OpenCode
+      models and thinking (three copies that disagree about SSH), Claude desktop app without Claude
+      Code, Websites as targets, Desktop app and CLI; `docs/opencode.md` has a paragraph twice.
+      Keep the newest complete copy of each
+      — claimed: youkaicountry, branch docs/r5.2-doubled-status-rows — PR #1226
+- [ ] Have `cargo xtask` refuse a STATUS.md table with two rows of the same name, so a merge
+      that keeps both copies of an edited row fails CI instead of reaching `main`
+- [x] `docs/opencode.md` still has one passage twice, missed by #1226: in "Configuration and
+      execution", the older copy of the standalone-server sentence, cut off after "both"
+      — claimed: youkaicountry, branch docs/r5.2-opencode-doubled-passage
 
 ### R5.3 A builder that can't make progress stops
 Owner: open · Status: todo
@@ -936,7 +946,11 @@ Owner: open · Status: in progress
       `main.go` — claimed: Afloat16, branch feature/r2.7-go-command-layouts
 - [x] Launch the single installed console script of a Python project from its virtual environment
       — claimed: Afloat16, branch feature/r2.7-python-console-entrypoint
-- [ ] Extend launch recipes to Java build outputs; build checks already use their toolchain commands
+- [x] Extend launch recipes to Java build outputs and Python packages; build checks already use
+      their toolchain commands. A single `<name>/__main__.py` runs as `python3 -m <name>`, the
+      single runnable jar in `target/` or `build/libs/` with `java -jar` (Maven now builds with
+      `package`); build wrappers stay out of launch
+      — PR #1209; claimed: rmsff, branch feature/r2.7-python-java-launch
 - [ ] Audit relative project placements in build, option-run and Play paths too: runtime window
       capture now normalizes its request paths, but earlier runner paths can still be relative
 - [x] Resolve Godot's project argument and the local Electron binary and project argument before
@@ -1026,9 +1040,17 @@ Gaps found while using the app for real projects.
       — `agent_session_deep` in `craft.json` records it (one saved before the field counts as Deep);
       a mismatch starts from the brief, and a question is answered from the files; tests cover both
       directions and the legacy case. Claimed: AlexJoaquimPereira, branch bugfix/r2.9-session-mode
+- [x] The shared investigation chat (`SharedConversation`) doesn't continue a Deep chat's agent
+      session once the chat is in Clean room; Clean room to Deep still continues — claimed: rmsff,
+      branch fix/r2.9-shared-chat-mode
 - [ ] A Clean room build or question must also not resume an API backend's kept transcript:
       `ws.transcript_path()` is loaded whenever it exists, so switching modes can carry what a Deep
       API build read. Clear it, or record its mode, when the mode changes; add a regression
+- [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
+      Clean room build or question when it would reuse the project's Deep session, leaving
+      unrelated arguments alone; unit and scripted CLI tests cover the build and question paths
+      (Clean room refuses, Deep allows), but no live signed-in Claude run is done, so this stays
+      open — claimed: AlexJoaquimPereira, branch bugfix/r2.9-saved-resume
 - [x] #504: the builder's plan card can be folded away with its X, or with `project_plan_fold`
       (between builds: a fold during a build can be overwritten by its next save). The steps stay
       in the conversation (`FEED_VERSION` 4, `FeedItem::PlanDismissed`), and a later run's
@@ -1342,6 +1364,9 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-dns-rdata-names-review-20261104
 - [x] Keep address and service records attached to their owner and validate the record's wire fields.
       — claimed: Afloat16, branch bugfix/r3.12-dns-record-evidence
+- [x] Accept binary plist arrays and sets that name one stored value many times; repeated data and
+      text spend a byte budget, and containers past the node cap are refused before reserving space.
+      — claimed: Plastic-time, branch bugfix/r3.12-plist-shared-array-values
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
