@@ -1257,6 +1257,7 @@ pub(crate) mod tests {
         assert!(e.registry().get(BUILD_COMMAND_TOOL).is_some_and(|s| !s.effects.is_empty()));
     }
 
+    /// A long conversation is summarised, saved after every message, and resumed in its mode.
     #[test]
     fn a_long_conversation_is_summarised_kept_and_resumed() {
         let d = tempfile::tempdir().unwrap();
@@ -1360,6 +1361,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// A huge backend budget can trim a kept conversation without overflow.
     #[test]
     fn a_large_backend_budget_can_trim_without_overflow() {
         let budget = i64::MAX as u64;
@@ -1520,6 +1522,7 @@ pub(crate) mod tests {
         assert!(journal.iter().any(|(kind, entry)| kind == "model_turn" && entry["purpose"] == "context_summary" && entry["backend"] == "Small"));
     }
 
+    /// A fallback fits its own budget, counting new tool results since the last request.
     #[test]
     fn fallback_budget_counts_new_results_since_the_last_request() {
         let last_input = 10_000;
@@ -1597,6 +1600,8 @@ pub(crate) mod tests {
         assert!(trims[0].1["tokens_before"].as_u64().unwrap() > budget);
     }
 
+    /// A request refused for the server's window is fitted and asked once more; a second refusal
+    /// stops with the way to raise the window.
     #[test]
     fn a_request_too_long_for_the_servers_window_is_fitted_and_asked_once_more() {
         // #962: Ollama on its 64k default refused a 70k request; our 24k-local guess counts

@@ -921,6 +921,7 @@ impl AiHub {
         self.start_loop(entry, beginner, transcript, true, &[Toolset::Core, Toolset::Build, Toolset::Formats], false)
     }
 
+    /// Start one loop with these toolsets, keeping its transcript and resuming it only in `deep`.
     fn start_loop(
         &self,
         entry: &BackendEntry,

@@ -1072,11 +1072,12 @@ Gaps found while using the app for real projects.
       `ws.transcript_path()` is loaded whenever it exists, so switching modes can carry what a Deep
       API build read. Clear it, or record its mode, when the mode changes; add a regression
       — an API transcript records the mode it ran in (`TRANSCRIPT_VERSION` 2); one from the other
-      mode, or a version-1 one (counts as Deep), isn't resumed, and a no-message run studies again
-      instead of carrying on. Claimed: AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
-- [ ] A coding agent's saved session from the other mode still counts as carrying on
-      (`builder_started()` is mode-unaware), so a CLI mode switch can skip the study; gate it the
-      same way the API transcript is gated
+      mode, or a version-1 one (counts as Deep), isn't resumed. A same-mode continuation keeps its
+      transcript and carries on; a mismatch studies again from the brief. Claimed:
+      AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
+- [ ] Study can still be skipped after a mode switch: a coding agent's `builder_started()` is
+      mode-unaware, and an API follow-up message with an existing capture leaves `first` false even
+      when the transcript was rejected. Gate both on the run's mode
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
       unrelated arguments alone; unit and scripted CLI tests cover the build and question paths
@@ -1296,8 +1297,12 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-sqlite-without-rowid-added-columns
 - [ ] Fill added SQLite columns whose DEFAULT is a hex integer or a literal in parentheses
       (`DEFAULT 0x10`, `DEFAULT (5)`); they show NULL with a note today.
-- [ ] Give filled-in SQLite defaults their column's affinity: `r REAL DEFAULT 5` reads 5.0 in
-      SQLite and 5 here.
+- [ ] Give filled-in SQLite defaults their column's affinity: `t TEXT DEFAULT 5` reads '5' in
+      SQLite and 5 here. (A REAL column's default already reads as a REAL.)
+- [x] Whole numbers in SQLite REAL columns read as REAL: SQLite stores a REAL with no fractional
+      part as an integer and turns it back into a REAL when it reads the column, so a REAL, FLOAT
+      or DOUBLE column holding 1.0 shows 1.0 instead of 1.
+      — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-real-affinity
 - [x] Require a complete DNS question's type and class fields before retaining it, and keep
       truncated questions out of packet inventories while reporting the incomplete message
       — claimed: Afloat16, branch bugfix/r3.12-dns-question-class-review-20261104
@@ -1410,6 +1415,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-index-map-boundaries
 - [x] Keep DOS relocations inside the declared executable header.
       — claimed: Afloat16, branch bugfix/r3.12-dos-relocation-header-boundary-20261105
+- [x] Keep relocation reads within their declared entry stride and never invent an addend for a truncated RELA.
+      — claimed: Afloat16, branch bugfix/r3.12-sbpf-rela
 - [x] Parsers refuse what they used to half-read: binary plists keep objects inside their object
       area and reject unrepresentable widths, base64 (plists, source maps) refuses damaged tails
       and incomplete quanta through one shared decoder, OIDs must be minimally encoded, and string
@@ -1470,6 +1477,10 @@ Owner: open · Status: in progress
       read (with a note) instead of shifting later values onto the wrong columns, in rowid and
       WITHOUT ROWID tables alike.
       — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-virtual-generated-columns
+- [x] A SQLite CREATE TABLE longer than 4 KiB is read whole. The schema walk cut it at the 4 KiB
+      text cap, so the columns after the cut weren't listed, a rowid alias read NULL, a WITHOUT
+      ROWID table showed no rows, and the defaults of columns added later weren't filled.
+      — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-long-create-table
 - [x] Comments in a SQLite CREATE TABLE stay out of its columns: a comma or quote in a comment
       doesn't split or swallow definitions, a comment before or right after a name isn't part of
       it, and a comment inside a definition isn't part of its type, so INTEGER PRIMARY KEY still

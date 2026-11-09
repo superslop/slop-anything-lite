@@ -225,6 +225,8 @@ mod tests {
         assert!(r.last().unwrap().text().contains("summary"));
     }
 
+    /// A conversation continues with its unfinished last step dropped; a newer or unreadable
+    /// file is left alone.
     #[test]
     fn transcripts_resume_without_an_unfinished_step() {
         let d = tempfile::tempdir().unwrap();
