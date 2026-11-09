@@ -451,6 +451,12 @@ been run live.
       message says so. Say "Craft Anything checks it after your turn" there instead
 - [x] When a server refuses a request for its context window and says the size (Ollama, llama.cpp,
       OpenAI-style), fit the conversation to that window and ask once more, else say how to raise it (#962)
+- [x] Ollama fits a long prompt to its context by dropping the oldest messages, and a Qwen 3.8 model
+      then refuses what's left with 500 "no user query found in messages" (#1245): say the context is
+      too small and how to raise it, and don't retry what can't fit
+      — claimed: justinjohn0306, branch bugfix/r5.4-ollama-dropped-request
+- [ ] Make room on its own after #1245's refusal: the server doesn't say its window, so this waits
+      for the window read from the server (#1155)
 - [x] A per-backend context budget in `[[ai.backends]]` (`LoopConfig::context_tokens` exists), for
       services whose real window differs from 150k (#374) — implementation: `6bd94b84828ec89b805cb8a246f557d0a778c037`
 - [x] Find LM Studio on another port (#73): the port in its settings file (when it is there) and
@@ -1300,8 +1306,14 @@ Owner: open · Status: in progress
       SQLite's 64-bit two's-complement value; one parenthesized literal is filled, while
       expressions and nested parentheses stay unknown with the note.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-sqlite-added-defaults
-- [ ] Give filled-in SQLite defaults their column's affinity: `t TEXT DEFAULT 5` reads '5' in
-      SQLite and 5 here. (A REAL column's default already reads as a REAL.)
+- [x] Give filled-in SQLite defaults their column's affinity, as SQLite reads them: a TEXT column
+      reads `DEFAULT 5` as '5' and `DEFAULT 007` as '7'; an INTEGER or NUMERIC column reads
+      `DEFAULT '7'` as 7 and `DEFAULT 5.0` as 5; a REAL column reads `DEFAULT '1.5'` as 1.5; a BLOB
+      or untyped column, and an ANY column in a STRICT table, keep the literal as written.
+      — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-default-affinity
+- [ ] Fill added SQLite columns whose DEFAULT is a bare or double-quoted word (`DEFAULT abc`,
+      `DEFAULT "abc"`), a signed string (`DEFAULT -'5'`) or a number with digit separators
+      (`DEFAULT 1_000`); they show NULL with a note today.
 - [x] Whole numbers in SQLite REAL columns read as REAL: SQLite stores a REAL with no fractional
       part as an integer and turns it back into a REAL when it reads the column, so a REAL, FLOAT
       or DOUBLE column holding 1.0 shows 1.0 instead of 1.
@@ -1398,12 +1410,16 @@ Owner: open · Status: in progress
 - [x] Keep PE version strings whose value is empty (stored with no value at all), such as
       `OleSelfRegister`, whose presence is the whole point.
       — claimed: Plastic-time, branch bugfix/r3.12-pe-empty-version-strings
-- [ ] Read PE version strings stored as binary (wType 0), which some linkers write; they're
-      dropped today (`FileDescription` in `pthreadVC2.dll`).
+- [x] Read PE version strings stored as binary (wType 0), which some linkers write; they're
+      dropped today (`FileDescription` in `pthreadVC2.dll`). A binary leaf at the string depth is
+      decoded as UTF-16LE; a binary node with children stays a container.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.12-pe-binary-version-strings
 - [x] Decode inline source-map data URLs without treating their URL fragments as payload; recognize case-insensitive scheme and base64 markers.
       — claimed: Afloat16, branch bugfix/r3.12-source-map-data-url-fragment
 - [x] Accept only valid WebAssembly names when reporting custom-section debug and source map URLs.
       — claimed: Afloat16, branch bugfix/r3.12-wasm-debug-names
+- [x] Decode the full signed 32-bit source map VLQ range and refuse mapping fields outside it.
+      — claimed: Afloat16, branch bugfix/r3.12-sourcemap-vlq-range
 - [x] Keep Go function tables and names within their section.
       — claimed: Afloat16, branch bugfix/r3.12-go-pclntab-section-boundary-20261105
 - [x] Keep the report's function display limit from marking a valid large WebAssembly module as mismatched.
@@ -1420,6 +1436,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-dos-relocation-header-boundary-20261105
 - [x] Keep relocation reads within their declared entry stride and never invent an addend for a truncated RELA.
       — claimed: Afloat16, branch bugfix/r3.12-sbpf-rela
+- [x] Use the sorted section and segment boundaries during source-map position lookups so repeated symbolication visits only matching positions.
+      — claimed: Afloat16, branch bugfix/r3.12-source-map-lookup-work
 - [x] Parsers refuse what they used to half-read: binary plists keep objects inside their object
       area and reject unrepresentable widths, base64 (plists, source maps) refuses damaged tails
       and incomplete quanta through one shared decoder, OIDs must be minimally encoded, and string
@@ -1427,6 +1445,8 @@ Owner: open · Status: in progress
       PAX sizes across other metadata records; CRC cpio checks member data; source maps decode
       percent-escaped data URLs and report indexed-map columns in the generated file
       (#606–#615, by Afloat16)
+- [x] Report truncated SquashFS metadata blocks and retain previously recovered blocks.
+      — claimed: Afloat16, branch bugfix/r3.12-squashfs-metadata-warning
 - [x] Bound filesystem and archive recovery by the recorded image, node, directory and member limits.
       — claimed: Afloat16, branch bugfix/r3.12-filesystem-archive-bounds
 - [x] Exercise signed PAX lengths, empty keys and equals signs inside a path value.

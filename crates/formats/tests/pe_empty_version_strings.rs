@@ -23,6 +23,12 @@ fn string(key: &str, value: &str) -> Vec<u8> {
     node(key, &units, (units.len() / 2) as u16, true, &[])
 }
 
+/// A string value written with wType 0 (binary), as some linkers do.
+fn binary_string(key: &str, value: &str) -> Vec<u8> {
+    let bytes: Vec<u8> = value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+    node(key, &bytes, bytes.len() as u16, false, &[])
+}
+
 /// What Windows resource compilers write for an empty value: no value at all (wValueLength 0).
 fn empty_string(key: &str) -> Vec<u8> {
     node(key, &[], 0, true, &[])
@@ -53,6 +59,26 @@ fn leaves_that_are_not_strings_stay_out() {
     let nameless = node("", &[], 0, true, &[]);
     let table = node("040904b0", &[], 0, true, &[binary, nameless, string("ProductName", "Craft")]);
     let info = pe::parse_version_info(&version_info(&[table])).unwrap();
+    assert_eq!(info.strings.keys().collect::<Vec<_>>(), ["ProductName"]);
+}
+
+/// Some linkers write a string with wType 0; its value is still UTF-16LE.
+#[test]
+fn binary_typed_version_strings_are_read() {
+    let table = node("040904b0", &[], 0, true, &[binary_string("FileDescription", "MS C"), string("ProductName", "Craft")]);
+    let info = pe::parse_version_info(&version_info(&[table])).unwrap();
+    assert_eq!(info.strings.get("FileDescription").map(String::as_str), Some("MS C"));
+    assert_eq!(info.strings.get("ProductName").map(String::as_str), Some("Craft"));
+}
+
+/// A binary leaf deeper than the string table is not a string and must not overwrite one.
+#[test]
+fn a_binary_leaf_below_the_string_depth_does_not_overwrite() {
+    let nested = binary_string("ProductName", "nested");
+    let container = node("FileDescription", &[0x4d, 0, 0x53, 0], 4, false, &[nested]);
+    let table = node("040904b0", &[], 0, true, &[string("ProductName", "Craft"), container]);
+    let info = pe::parse_version_info(&version_info(&[table])).unwrap();
+    assert_eq!(info.strings.get("ProductName").map(String::as_str), Some("Craft"));
     assert_eq!(info.strings.keys().collect::<Vec<_>>(), ["ProductName"]);
 }
 

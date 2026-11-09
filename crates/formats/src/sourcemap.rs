@@ -96,8 +96,8 @@ impl SourceMap {
     pub fn original_positions(&self, line: u32, column: u32) -> Vec<OriginalPosition> {
         if !self.sections.is_empty() {
             // Last section that starts at or before the position.
-            let found = self.sections.iter().rev().find(|(l, c, _)| (*l, *c) <= (line, column));
-            let Some((l, c, map)) = found else { return Vec::new() };
+            let end = self.sections.partition_point(|(l, c, _)| (*l, *c) <= (line, column));
+            let Some((l, c, map)) = end.checked_sub(1).and_then(|i| self.sections.get(i)) else { return Vec::new() };
             let rel_line = line.saturating_sub(*l);
             let rel_col = if rel_line == 0 { column.saturating_sub(*c) } else { column };
             return map
@@ -116,8 +116,10 @@ impl SourceMap {
         let idx = segs.partition_point(|s| s.generated_column <= column);
         let Some(best) = idx.checked_sub(1).and_then(|i| segs.get(i)) else { return Vec::new() };
         let col = best.generated_column;
-        segs.iter()
-            .filter(|s| s.generated_column == col)
+        let first = segs.partition_point(|s| s.generated_column < col);
+        segs.get(first..idx)
+            .unwrap_or_default()
+            .iter()
             .filter_map(|s| {
                 let (src, l, c, n) = s.original?;
                 Some(OriginalPosition {
@@ -217,23 +219,30 @@ fn b64(c: u8) -> Option<i64> {
 
 /// Decode one VLQ field from `bytes` at `*pos`.
 fn vlq(bytes: &[u8], pos: &mut usize) -> Option<i64> {
-    let mut result: i64 = 0;
+    let mut result = 0u32;
     let mut shift = 0u32;
     loop {
-        let d = b64(*bytes.get(*pos)?)?;
+        let d = b64(*bytes.get(*pos)?)? as u32;
         *pos += 1;
-        if shift > 35 {
-            return None;
+        let bits = d & 31;
+        if bits != 0 {
+            if bits > u32::MAX.checked_shr(shift)? {
+                return None;
+            }
+            result |= bits << shift;
         }
-        result |= (d & 31) << shift;
         if d & 32 == 0 {
             break;
         }
-        shift += 5;
+        // Redundant zero groups do not change the value.
+        shift = shift.saturating_add(5);
     }
-    let neg = result & 1 == 1;
-    let v = result >> 1;
-    Some(if neg { -v } else { v })
+    let magnitude = i64::from(result >> 1);
+    Some(match (result & 1, magnitude) {
+        (1, 0) => i64::from(i32::MIN),
+        (1, n) => -n,
+        _ => magnitude,
+    })
 }
 
 fn decode_mappings(m: &str, map: &mut SourceMap, budget: &mut usize) -> Result<(), SourceMapError> {
@@ -343,6 +352,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lookup_keeps_coincident_mappings_and_stops_at_an_unmapped_segment() {
+        let map = parse(br#"{"version":3,"sources":["a","b"],"mappings":"EAAA,ACAA,E"}"#, Limits::default()).unwrap();
+        assert!(map.original_positions(0, 1).is_empty());
+        let matches = map.original_positions(0, 3);
+        assert_eq!(matches.iter().map(|p| p.source_index).collect::<Vec<_>>(), [0, 1]);
+        assert!(map.original_positions(0, 4).is_empty());
+    }
+
+    #[test]
     fn decodes_and_looks_up() {
         // Generated "a;b" from two lines of src.js.
         let m = br#"{"version":3,"sources":["src.js"],"names":["foo"],"mappings":"AAAAA,EAAE;AACA","sourcesContent":["x\ny"]}"#;
@@ -413,6 +431,22 @@ mod tests {
         assert_eq!(find_source_mapping_url("x()\n//# sourceMappingURL=app.js.map\n").as_deref(), Some("app.js.map"));
         assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(decode_data_url("data:application/json;base64,e30=").unwrap(), b"{}");
+    }
+
+    #[test]
+    fn vlq_signed_extremes_and_overflow() {
+        for (field, value) in [
+            ("B", Some(i64::from(i32::MIN))),
+            ("+/////D", Some(i64::from(i32::MAX))),
+            ("//////D", Some(-i64::from(i32::MAX))),
+            ("ggggggE", None),
+            ("ggggggggggA", Some(0)),
+        ] {
+            assert_eq!(vlq(field.as_bytes(), &mut 0), value, "{field}");
+        }
+        let map = parse(br#"{"version":3,"mappings":"+/////D,C,B"}"#, Limits::default()).unwrap();
+        assert_eq!(map.lines[0].iter().map(|s| s.generated_column).collect::<Vec<_>>(), [0, 2147483647, 2147483648]);
+        assert!(parse(br#"{"version":3,"mappings":"B"}"#, Limits::default()).is_err());
     }
 
     #[test]
