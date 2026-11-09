@@ -747,6 +747,12 @@ Owner: open · Status: in progress
 - [ ] A turn stopped before OpenCode's first event leaves no session id to delete: OpenCode names its
       session only in that event, so the session it may already have made stays (#1115, review on
       #1176). Needs a session id known before the run (one we create and pass in), if OpenCode allows it
+- [x] OpenCode's model discovery (`api model.list`, run before every turn to check the chosen
+      model) has no `--standalone`, so it starts the shared service, and the service resumes any
+      unfinished session on the computer, in any project (#1115). Seen live with 2.2.5 on Linux: a
+      build's model check woke it, and a session left from days before went on editing another
+      project. Discover with a private server unless the person chose `--server`
+      — claimed: youkaicountry, branch bugfix/r2.2-opencode-discovery-standalone
 
 "Found on this computer" has to mean "can do the job". Today only Claude Code gets everything.
 **Every builder gets the same tools:**
@@ -878,6 +884,11 @@ Owner: open · Status: in progress
       command that breaks it. The installed skill now warns against running `setup` on such an entry;
       `doctor` and `setup` should keep the person's extra arguments instead
       — claimed: 18923837179wjt-dot, branch fix/setup-skill-warns-before-setup-drops-all-tools
+- [x] Windows: a `.cmd` that only runs one `.exe` by its full path (`"C:\…\codex.exe" %*`, written
+      by hand or by another tool) was started through `cmd.exe`, which refuses an argument with a
+      line break ("batch file arguments are invalid"), expands `%` and caps the line at 8191
+      characters; that `.exe` is now started directly, as an npm shim's is (#1237)
+      — claimed: jgt87, branch bugfix/r2.2-cmd-wrapper-exe — PR #1238
 
 ### R2.4 Runtime study for apps and games (with consent)
 Owner: maintainers · Status: in progress
@@ -1157,6 +1168,9 @@ Gaps found while using the app for real projects.
 - [x] An engine download the server can't answer right now (a 5xx, 429) says to try again later,
       not "update the pinned URL", which nobody installing an engine can do (#1193)
       — claimed: justinjohn0306, branch bugfix/r2.9-download-server-errors
+- [x] Settings → AI: a card for an AI found on this computer wraps its description beside its Add
+      button; the line didn't wrap and ran on under the button
+      — claimed: jgt87, branch bugfix/r2.9-detected-cards-wrap — PR #1235
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
@@ -1367,6 +1381,11 @@ Owner: open · Status: in progress
 - [x] Accept binary plist arrays and sets that name one stored value many times; repeated data and
       text spend a byte budget, and containers past the node cap are refused before reserving space.
       — claimed: Plastic-time, branch bugfix/r3.12-plist-shared-array-values
+- [x] SQLite rows keep each value on its own column when a table has VIRTUAL generated columns:
+      SQLite computes those when a row is read and stores no field for them, so they show as not
+      read (with a note) instead of shifting later values onto the wrong columns, in rowid and
+      WITHOUT ROWID tables alike.
+      — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-virtual-generated-columns
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
