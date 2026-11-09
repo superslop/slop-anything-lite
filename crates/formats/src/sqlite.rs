@@ -458,9 +458,15 @@ impl<'a> SqliteDb<'a> {
         self.collect_table_rows(&mut w, rootpage, 0);
         if let Some(table) = table {
             if let Some(order) = without_rowid_order(&table) {
+                // A row stored before ALTER TABLE ADD COLUMN ends early, and added columns come last
+                // in both orders. Keep every stored field, and leave off the columns after the last
+                // one so the defaults below fill them.
                 for row in &mut w.out {
+                    let stored = row.values.len();
+                    let keep = order.iter().rposition(|slot| slot.is_some_and(|i| i < stored)).map_or(0, |last| last.saturating_add(1));
                     row.values = order
                         .iter()
+                        .take(keep)
                         .map(|slot| match slot {
                             Some(i) => row.values.get(*i).cloned().unwrap_or(CellValue::Null),
                             None => CellValue::NotRead,
@@ -870,7 +876,7 @@ fn is_without_rowid(sql: &str) -> bool {
 fn without_rowid_order(table: &SchemaObject) -> Option<Vec<Option<usize>>> {
     let generated: Vec<bool> = column_definitions(&table.sql).iter().map(|(_, rest)| is_virtual_column(rest)).collect();
     let is_virtual = |i: usize| generated.get(i).copied().unwrap_or(false);
-    let open = table.sql.find('(')?;
+    let open = column_list_open(&table.sql)?;
     let close = table.sql.rfind(')')?;
     let body = table.sql.get(open.checked_add(1)?..close)?;
     let mut stored = Vec::new();
@@ -959,11 +965,12 @@ pub fn parse_create_columns(sql: &str) -> Vec<Column> {
     column_definitions(sql).into_iter().map(|(column, _)| column).collect()
 }
 
+/// Each column of a CREATE TABLE, with the text that follows its name (type, constraints,
+/// default).
 fn column_definitions(sql: &str) -> Vec<(Column, &str)> {
     let mut cols = Vec::new();
     // Take the text inside the outermost parentheses.
-    let Some(open) = sql.find('(') else { return cols };
-    let inner = &sql[open + 1..];
+    let Some(inner) = column_list_open(sql).and_then(|open| sql.get(open.checked_add(1)?..)) else { return cols };
     let mut depth = 1usize;
     let mut end = inner.len();
     for token in sql_tokens(inner) {
@@ -982,23 +989,29 @@ fn column_definitions(sql: &str) -> Vec<(Column, &str)> {
         if cols.len() >= MAX_COLUMNS {
             break;
         }
-        let seg = seg.trim();
-        if seg.is_empty() {
-            continue;
-        }
+        // A comment in front of a definition (often the previous line's note) isn't part of it.
+        let Some(first) = sql_tokens(seg).into_iter().next() else { continue };
+        let seg = seg.get((first.as_ptr() as usize).saturating_sub(seg.as_ptr() as usize)..).unwrap_or("").trim_end();
         // Skip table-level constraints.
-        let first_word = seg.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("").to_ascii_uppercase();
+        let first_word = first.to_ascii_uppercase();
         if matches!(first_word.as_str(), "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN") {
             continue;
         }
         let (name, rest) = take_identifier(seg);
-        if name.is_empty() {
+        if name.is_empty() && !seg.starts_with(['"', '`', '\'', '[']) {
             continue;
         }
-        let type_name = extract_type(rest.trim());
+        let type_name = extract_type(strip_comments(rest).trim());
         cols.push((Column { name, type_name }, rest));
     }
     cols
+}
+
+/// Where a CREATE TABLE's column list opens: the first parenthesis outside quotes, so a table
+/// named `"export (1)"` doesn't start it.
+fn column_list_open(sql: &str) -> Option<usize> {
+    let open = sql_tokens(sql).into_iter().find(|token| *token == "(")?;
+    (open.as_ptr() as usize).checked_sub(sql.as_ptr() as usize)
 }
 
 /// Identify the single INTEGER primary key, excluding the column-level DESC exception.
@@ -1108,11 +1121,30 @@ fn sql_tokens(mut sql: &str) -> Vec<&str> {
             }
         } else if !matches!(first, '(' | ')' | ',' | '/') {
             end = sql.find(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\'' | '"' | '`' | '[' | '/')).unwrap_or(sql.len());
+            // A line comment may follow a word with no space between: `INTEGER--note`.
+            if let Some(dash) = sql.get(..end).and_then(|word| word.find("--")).filter(|&dash| dash > 0) {
+                end = dash;
+            }
         }
         tokens.push(sql.get(..end).unwrap_or(""));
         sql = sql.get(end..).unwrap_or("");
     }
     tokens
+}
+
+/// `text` with each SQL comment replaced by a space. Quoted text is kept as it is.
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut end = 0usize;
+    for token in sql_tokens(text) {
+        let start = (token.as_ptr() as usize).saturating_sub(text.as_ptr() as usize);
+        // Only whitespace and comments lie between two tokens.
+        let gap = text.get(end..start).unwrap_or("");
+        out.push_str(if gap.contains("--") || gap.contains("/*") { " " } else { gap });
+        out.push_str(token);
+        end = start.saturating_add(token.len());
+    }
+    out
 }
 
 /// Missing trailing fields use literal defaults; expressions remain explicitly unknown.
@@ -1181,53 +1213,49 @@ fn literal_default(tokens: &[&str]) -> Option<CellValue> {
     number.parse::<f64>().ok().filter(|n| n.is_finite()).map(CellValue::Real)
 }
 
-/// Split on top-level commas (ignoring commas inside parentheses).
+/// Split on top-level commas (ignoring commas inside parentheses, quotes and comments).
 fn split_top_level(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
-    let mut depth = 0i32;
+    let mut depth = 0usize;
     let mut start = 0usize;
-    let mut in_quote: Option<char> = None;
-    for (i, c) in s.char_indices() {
-        if let Some(q) = in_quote {
-            if c == q {
-                in_quote = None;
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' | '`' => in_quote = Some(c),
-            '[' => depth += 1,
-            ']' => depth -= 1,
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(s.get(start..i).unwrap_or(""));
-                start = i + 1;
+    for token in sql_tokens(s) {
+        match token {
+            "(" => depth = depth.saturating_add(1),
+            ")" => depth = depth.saturating_sub(1),
+            "," if depth == 0 => {
+                let at = (token.as_ptr() as usize).saturating_sub(s.as_ptr() as usize);
+                out.push(s.get(start..at).unwrap_or(""));
+                start = at.saturating_add(1);
+                if out.len() >= MAX_COLUMNS {
+                    return out;
+                }
             }
             _ => {}
-        }
-        if out.len() >= MAX_COLUMNS {
-            return out;
         }
     }
     out.push(s.get(start..).unwrap_or(""));
     out
 }
 
-/// Take the leading column identifier (handling "quoted", `back-ticked`, [bracketed] names).
+/// Take the leading column identifier (handling "quoted", `back-ticked`, 'single-quoted' and
+/// [bracketed] names).
 fn take_identifier(seg: &str) -> (String, &str) {
     let seg = seg.trim_start();
-    let mut chars = seg.char_indices();
+    let mut chars = seg.char_indices().peekable();
     match chars.next() {
-        Some((_, q @ ('"' | '`'))) => {
-            // Quoted: read to the closing quote (doubled quote = literal, kept simple).
-            for (i, c) in chars {
-                if c == q {
-                    let name = seg.get(1..i).unwrap_or("").replace(&format!("{q}{q}"), &q.to_string());
-                    return (name, seg.get(i + 1..).unwrap_or(""));
+        Some((_, q @ ('"' | '`' | '\''))) => {
+            // Quoted: read to the closing quote. A doubled quote stands for one quote.
+            let mut name = String::new();
+            while let Some((i, c)) = chars.next() {
+                if c != q {
+                    name.push(c);
+                } else if chars.next_if(|&(_, next)| next == q).is_some() {
+                    name.push(q);
+                } else {
+                    return (name, seg.get(i.saturating_add(1)..).unwrap_or(""));
                 }
             }
-            (seg.get(1..).unwrap_or("").to_string(), "")
+            (name, "")
         }
         Some((_, '[')) => {
             if let Some(close) = seg.find(']') {
@@ -1237,6 +1265,8 @@ fn take_identifier(seg: &str) -> (String, &str) {
         }
         Some(_) => {
             let endp = seg.find([' ', '\t', '\n', '(', ',']).unwrap_or(seg.len());
+            // A comment may follow the name with no space between: `id/*key*/` or `id--key`.
+            let endp = ["--", "/*"].into_iter().filter_map(|mark| seg.get(..endp)?.find(mark)).fold(endp, usize::min);
             (seg.get(..endp).unwrap_or("").to_string(), seg.get(endp..).unwrap_or(""))
         }
         None => (String::new(), ""),

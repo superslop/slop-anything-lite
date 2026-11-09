@@ -212,6 +212,32 @@ fn disabled_backends_are_refused_when_chat_starts() {
     }
 }
 
+/// R2.9: an API backend's kept transcript is resumed only in the mode that saved it.
+#[test]
+fn an_api_transcript_is_resumed_only_in_its_mode() {
+    let (h, dir) = hub();
+    h.add_backend(
+        BackendConfig {
+            name: "Local".into(),
+            kind: BackendKind::OpenaiCompatible,
+            model: "test-model".into(),
+            base_url: Some("http://127.0.0.1:0/v1".into()),
+            ssh_host: None,
+            enabled: true,
+        },
+        None,
+    )
+    .unwrap();
+    let entry = h.entry("Local").unwrap();
+    let path = dir.path().join("transcript.json");
+    let history = vec![crate::model::Msg::user_text("a Deep conversation")];
+    crate::context::save(&path, &history, true).unwrap();
+    assert!(h.start_builder(&entry, false, Some(path.clone()), true).unwrap().resumed(), "Deep continues a Deep transcript");
+    assert!(!h.start_builder(&entry, false, Some(path.clone()), false).unwrap().resumed(), "Clean room starts fresh");
+    crate::context::save(&path, &history, false).unwrap();
+    assert!(!h.start_builder(&entry, false, Some(path), true).unwrap().resumed(), "Deep doesn't continue a Clean room transcript");
+}
+
 /// Compare checks either position; enabled named and automatic chat choices still work.
 #[test]
 fn disabled_backends_are_refused_on_either_side_of_compare() {

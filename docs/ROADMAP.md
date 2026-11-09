@@ -753,6 +753,20 @@ Owner: open · Status: in progress
       build's model check woke it, and a session left from days before went on editing another
       project. Discover with a private server unless the person chose `--server`
       — claimed: youkaicountry, branch bugfix/r2.2-opencode-discovery-standalone
+- [x] `docs/opencode.md` says "OpenCode V2" but not where to get it: OpenCode's install script
+      and npm's `opencode-ai` give the 1.x line, whose `run` has no `--standalone` (npm's
+      `@opencode/cli` is 2.x), so the check before a build
+      can't confirm it. Say where 2.x comes from and how to point the backend at it, and record
+      the Linux live runs in STATUS.md
+      — claimed: youkaicountry, branch docs/r2.2-opencode-live-findings — PR #1241
+- [ ] OpenCode's shared service, started while a `--standalone` run is going (opening the desktop
+      app does), takes over that run's session: both servers ran its commands, and the turn ended
+      with an error that had no details (seen live on Linux, a 2.2.6 service beside a 2.2.5 run).
+      Keep a run's session out of the service's reach, if OpenCode allows it; until then
+      `docs/opencode.md` says not to open OpenCode during a build
+- [ ] OpenCode logs "Received a progress notification for an unknown token" for our tool server
+      after calls through 2.x's `execute` (seen live on Linux, 2.2.5): check that our MCP server
+      sends progress only for a request that carried a `progressToken`, and only before its result
 
 "Found on this computer" has to mean "can do the job". Today only Claude Code gets everything.
 **Every builder gets the same tools:**
@@ -1054,9 +1068,15 @@ Gaps found while using the app for real projects.
 - [x] The shared investigation chat (`SharedConversation`) doesn't continue a Deep chat's agent
       session once the chat is in Clean room; Clean room to Deep still continues — claimed: rmsff,
       branch fix/r2.9-shared-chat-mode
-- [ ] A Clean room build or question must also not resume an API backend's kept transcript:
+- [x] A Clean room build or question must also not resume an API backend's kept transcript:
       `ws.transcript_path()` is loaded whenever it exists, so switching modes can carry what a Deep
       API build read. Clear it, or record its mode, when the mode changes; add a regression
+      — an API transcript records the mode it ran in (`TRANSCRIPT_VERSION` 2); one from the other
+      mode, or a version-1 one (counts as Deep), isn't resumed, and a no-message run studies again
+      instead of carrying on. Claimed: AlexJoaquimPereira, branch bugfix/r2.9-api-transcript-mode
+- [ ] A coding agent's saved session from the other mode still counts as carrying on
+      (`builder_started()` is mode-unaware), so a CLI mode switch can skip the study; gate it the
+      same way the API transcript is gated
 - [ ] A saved Claude `--resume`/`--continue` in the backend's extra arguments is refused in a
       Clean room build or question when it would reuse the project's Deep session, leaving
       unrelated arguments alone; unit and scripted CLI tests cover the build and question paths
@@ -1264,11 +1284,20 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-asar-limit-bounds-20261107
 - [x] Keep .NET bundle member reads before the manifest.
       — claimed: Afloat16, branch bugfix/r3.12-dotnet-data-bounds-20261107
+- [x] Check the decoded byte count for packed files whose manifest declares their original size.
+      — claimed: Afloat16, branch bugfix/r3.12-packed-member-size
 - [x] SQLite TEXT values cut at the 4 KiB cap can end in a spurious U+FFFD when the cut lands
       inside a character; cut at a UTF-8/UTF-16 boundary and keep the `truncated` flag
       — tests cover a UTF-8 character, a UTF-16 surrogate pair and a UTF-16 continuation-like
       byte at the cut; invalid bytes keep their lossy prefix. Claimed: AlexJoaquimPereira,
       branch bugfix/r3.12-sqlite-text-cap
+- [x] WITHOUT ROWID rows stored before ALTER TABLE ADD COLUMN show the added columns' defaults,
+      as rowid tables already do, instead of NULL.
+      — claimed: Plastic-time, branch bugfix/r3.12-sqlite-without-rowid-added-columns
+- [ ] Fill added SQLite columns whose DEFAULT is a hex integer or a literal in parentheses
+      (`DEFAULT 0x10`, `DEFAULT (5)`); they show NULL with a note today.
+- [ ] Give filled-in SQLite defaults their column's affinity: `r REAL DEFAULT 5` reads 5.0 in
+      SQLite and 5 here.
 - [x] Require a complete DNS question's type and class fields before retaining it, and keep
       truncated questions out of packet inventories while reporting the incomplete message
       — claimed: Afloat16, branch bugfix/r3.12-dns-question-class-review-20261104
@@ -1276,6 +1305,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-ipv4-header-lengths-20261105
 - [x] Validate the version in IPv6 frames.
       — claimed: Afloat16, branch bugfix/r3.12-ipv6-version-20261105
+- [x] Reject negative GNU base-256 values in unsigned tar header fields.
+      — claimed: Afloat16, branch bugfix/r3.12-tar-octal-fields
 - [x] Recognize ZIP directories from DOS directory attributes and Unix file-type metadata when the entry name has no trailing slash.
       — claimed: Afloat16, branch bugfix/r3.12-zip-directory-attributes
 - [x] Stop decoding extension headers inside noninitial IPv6 fragments.
@@ -1286,6 +1317,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-dns-txt-truncation-20261105
       Preserve empty ANY/NONE UPDATE prerequisites with zero TTL; keep TXT validation scoped to parsed answers/prerequisites.
       Preserve empty multicast/unicast DNS-SD TXT records using wire-label service instance names.
+- [x] Validate DER algorithm identifiers, signature and key bit strings, and name fields before using them as certificate verification inputs.
+      — claimed: Afloat16, branch bugfix/r3.12-der-verification-fields
 - [x] Read HTTP Host fields only from the header section.
       — claimed: Afloat16, branch bugfix/r3.12-http-host-boundary-20261105
 - [x] Keep capture flow timestamps in chronological order.
@@ -1301,6 +1334,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-zip-multidisk-20261105
 - [x] Check Unity bundle blocks against their declared output lengths.
       — claimed: Afloat16, branch bugfix/r3.12-unity-bundle-decompressed-length-20261105
+- [x] Require terminated cpio pathnames and a complete, empty trailer before reporting an archive as complete.
+      — claimed: Afloat16, branch bugfix/r3.12-cpio-path-and-trailer
 - [x] Locate Unity bundle metadata within the declared bundle size.
       — claimed: Afloat16, branch bugfix/r3.12-unity-bundle-declared-size-20261105
 - [x] Check that Unity bundle compressed blocks end before the trailing block table, or the declared
@@ -1308,6 +1343,8 @@ Owner: open · Status: in progress
       — claimed: Codex, branch bugfix/r3.12-unity-bundle-data-region; PR #1021
 - [x] Reject Unity serialized objects outside their declared file.
       — claimed: Afloat16, branch bugfix/r3.12-unity-serialized-object-ranges-20261105
+- [x] Count WebAssembly locals across all declaration groups in retained function bodies.
+      — claimed: Afloat16, branch bugfix/r3.12-wasm-locals
 - [x] Preserve compression method slots in Unreal pak indexes.
       — claimed: Afloat16, branch bugfix/r3.12-unreal-pak-compression-slots-20261105
 - [x] Require complete terminators in Unreal FString values.
@@ -1316,32 +1353,61 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-iostore-unaligned-chunk-blocks-20261105
 - [x] Reject truncated IoStore fixed headers.
       — claimed: Afloat16, branch bugfix/r3.12-iostore-complete-header-20261105
+- [x] Reject CBOR collections that exceed the EVM metadata reader's limits and invalid text strings.
+      — claimed: Afloat16, branch bugfix/r3.12-evm-cbor
 - [x] Reject invalid marshal long integer digits.
       — claimed: Afloat16, branch bugfix/r3.12-pyc-long-limb-validation-20261105
 - [x] Check expanded RGBA image sizes and enforce output budgets before allocation.
       — claimed: Afloat16, branch bugfix/r3.12-pixel-rgba-output-overflow-20261105
+- [x] Report malformed safetensors metadata, element widths and payload coverage.
+      — claimed: Afloat16, branch bugfix/r3.12-safetensors-layout
 - [x] Count empty tensor shapes consistently across axis orders.
       — claimed: Afloat16, branch bugfix/r3.12-tensor-zero-dimension-product-20261105
 - [x] Find APK signatures through valid ZIP comments and framed central directories.
       — claimed: Afloat16, branch bugfix/r3.12-apk-sign-eocd-comment-boundary-20261105
+- [x] Read 16-bit native pointers without consuming adjacent bytes.
+      — claimed: Afloat16, branch bugfix/r3.12-binary-pointer
 - [x] Keep Mach-O load-command facts within their command.
       — claimed: Afloat16, branch bugfix/r3.12-macho-load-command-framing-20261105
+- [x] Keep native address translations and reads inside both the mapped range and its file-backed bytes.
+      — claimed: Afloat16, branch bugfix/r3.12-binary-padding
 - [x] Keep Mach-O function starts within their declared payload.
       — claimed: Afloat16, branch bugfix/r3.12-macho-function-starts-payload-boundary-20261105
+- [x] Decode binary plist markers and dictionary keys according to their stored types.
+      — claimed: Afloat16, branch bugfix/r3.12-bplist-typed-objects
+- [x] Visit XML plist values only inside a complete, correctly encoded document.
+      — claimed: Afloat16, branch bugfix/r3.12-xml-plist-document
 - [x] Keep code-signature children and verification reads within their declared superblob.
       — claimed: Afloat16, branch bugfix/r3.12-codesign-superblob-length-boundary-20261105
+- [x] Refuse short ELF64 header and section records and handle section-table offsets at the address limit safely.
+      — claimed: Afloat16, branch bugfix/r3.12-sbpf-records
 - [x] Keep PE optional-header reads within the declared header.
       — claimed: Afloat16, branch bugfix/r3.12-pe-optional-header-framing-20261105
+- [x] Keep relocation symbol indices inside a linked symbol table and require a linked string table before reporting a syscall name.
+      — claimed: Afloat16, branch bugfix/r3.12-sbpf-symbols
 - [x] Keep PE resource metadata within the resource directory.
       — claimed: Afloat16, branch bugfix/r3.12-pe-resource-directory-boundary-20261105
+- [x] Keep PE version strings whose value is empty (stored with no value at all), such as
+      `OleSelfRegister`, whose presence is the whole point.
+      — claimed: Plastic-time, branch bugfix/r3.12-pe-empty-version-strings
+- [ ] Read PE version strings stored as binary (wType 0), which some linkers write; they're
+      dropped today (`FileDescription` in `pthreadVC2.dll`).
 - [x] Decode inline source-map data URLs without treating their URL fragments as payload; recognize case-insensitive scheme and base64 markers.
       — claimed: Afloat16, branch bugfix/r3.12-source-map-data-url-fragment
+- [x] Accept only valid WebAssembly names when reporting custom-section debug and source map URLs.
+      — claimed: Afloat16, branch bugfix/r3.12-wasm-debug-names
 - [x] Keep Go function tables and names within their section.
       — claimed: Afloat16, branch bugfix/r3.12-go-pclntab-section-boundary-20261105
+- [x] Keep the report's function display limit from marking a valid large WebAssembly module as mismatched.
+      — claimed: Afloat16, branch bugfix/r3.12-wasm-function-count
 - [x] Preserve complete Unicode characters in shortened .NET strings.
       — claimed: Afloat16, branch bugfix/r3.12-dotnet-user-string-surrogate-limit-20261105
+- [x] Read a Dart ELF build ID only when its name and descriptor fit the declared note.
+      — claimed: Afloat16, branch bugfix/r3.12-dart-note
 - [x] Locate ELF core mapping names after the complete declared table.
       — claimed: Afloat16, branch bugfix/r3.12-elf-core-file-name-count-cap-20261105
+- [x] Validate index source map section offsets and stop an unresolved section from borrowing mappings from the preceding section.
+      — claimed: Afloat16, branch bugfix/r3.12-index-map-boundaries
 - [x] Keep DOS relocations inside the declared executable header.
       — claimed: Afloat16, branch bugfix/r3.12-dos-relocation-header-boundary-20261105
 - [x] Parsers refuse what they used to half-read: binary plists keep objects inside their object
@@ -1351,6 +1417,10 @@ Owner: open · Status: in progress
       PAX sizes across other metadata records; CRC cpio checks member data; source maps decode
       percent-escaped data URLs and report indexed-map columns in the generated file
       (#606–#615, by Afloat16)
+- [x] Bound filesystem and archive recovery by the recorded image, node, directory and member limits.
+      — claimed: Afloat16, branch bugfix/r3.12-filesystem-archive-bounds
+- [x] Exercise signed PAX lengths, empty keys and equals signs inside a path value.
+      — claimed: Afloat16, branch bugfix/r3.12-pax-record-framing
 - [x] Bound and cancel CRC cpio verification across firmware probes, and reject non-hex checksum
       fields — claimed: Afloat16, branch bugfix/r3.12-bound-cpio-crc-scans-20261103
 - [x] More parsers keep to the bytes they declare and refuse impossible values: signed LEB128 past
@@ -1363,7 +1433,15 @@ Owner: open · Status: in progress
       TCP, pcapng and TLS lengths (#688–#715, by Afloat16)
 - [x] Check ClientHello vector lengths and extension values before reporting the handshake as complete.
       — claimed: Afloat16, branch bugfix/r3.12-tls-client-hello-values
+- [x] SQLite tables whose quoted name holds a parenthesis (`"export (1)"`) keep their columns,
+      rowid alias and WITHOUT ROWID order: the column list opens at the first parenthesis outside
+      quotes.
+      — claimed: Plastic-time, branch bugfix/r3.12-sqlite-parenthesized-table-names
+- [ ] A comment after a SQLite column list that holds `)` (`... WITHOUT ROWID /* ) */`) still hides
+      the WITHOUT ROWID marker: find the list's closing parenthesis by tokens, not `rfind(')')`.
 
+- [x] Keep Android binary XML events within their document, chunk and attribute bounds.
+      — claimed: Afloat16, branch bugfix/r3.12-android-xml-events
 - [x] Address the combined parser review: preserve partial Java reference coverage,
       enforce DEX signed 32-bit LEB128 limits, recover legacy AAPT UTF-8 lengths within
       their pool with a shared recovery probe limit, and distinguish missing ext indirect
@@ -1378,14 +1456,27 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-dns-rdata-names-review-20261104
 - [x] Keep address and service records attached to their owner and validate the record's wire fields.
       — claimed: Afloat16, branch bugfix/r3.12-dns-record-evidence
+- [x] Resolve keyed archive references consistently in nested objects and object rows.
+      — claimed: Afloat16, branch bugfix/r3.12-keyed-archive-references
 - [x] Accept binary plist arrays and sets that name one stored value many times; repeated data and
       text spend a byte budget, and containers past the node cap are refused before reserving space.
       — claimed: Plastic-time, branch bugfix/r3.12-plist-shared-array-values
+- [x] SQLite column names read whole when quoted: a doubled quote inside one stands for a quote,
+      and single-quoted names (which SQLite accepts) lose their quotes. Keys that name such columns
+      find them, so rowid aliases and WITHOUT ROWID order hold.
+      — claimed: Plastic-time, branch bugfix/r3.12-sqlite-quoted-column-names
 - [x] SQLite rows keep each value on its own column when a table has VIRTUAL generated columns:
       SQLite computes those when a row is read and stores no field for them, so they show as not
       read (with a note) instead of shifting later values onto the wrong columns, in rowid and
       WITHOUT ROWID tables alike.
       — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-virtual-generated-columns
+- [x] Comments in a SQLite CREATE TABLE stay out of its columns: a comma or quote in a comment
+      doesn't split or swallow definitions, a comment before or right after a name isn't part of
+      it, and a comment inside a definition isn't part of its type, so INTEGER PRIMARY KEY still
+      marks the rowid alias.
+      — claimed: Plastic-time, branch bugfix/r3.12-sqlite-create-table-comments
+- [ ] Keep the comma inside a SQLite type's parentheses: `DECIMAL(10, 2)` is listed as
+      `DECIMAL(10 2)`.
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
